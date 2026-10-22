@@ -200,16 +200,17 @@ fn reliable_msgs_are_acked_and_delivered() {
     bridge.send(&rel(4, res(4)));
     let mut got = Vec::new();
     while got.len() < 3 {
-        if let LinkEvent::Msg(Msg::Result { req, .. }) =
-            next_event(&rx, T, |e| matches!(e, LinkEvent::Msg(_)))
-        {
-            got.push(req);
+        match next_event(&rx, T, |e| matches!(e, LinkEvent::Msg(_))) {
+            LinkEvent::Msg(Msg::Result { req, .. }) => got.push(req),
+            other => panic!("unexpected message event: {other:?}"),
         }
     }
     assert_eq!(got, vec![1, 2, 4]);
     // The unknown one was ACKed (cum reaches 4) and never emitted.
     bridge.wait(T, |d| matches!(d, Datagram::Ack { cum: 4, .. }).then_some(()));
-    assert!(rx.recv_timeout(Duration::from_millis(100)).map_or(true, |e| !matches!(e, LinkEvent::Msg(_))));
+    while let Ok(ev) = rx.recv_timeout(Duration::from_millis(100)) {
+        assert!(!matches!(ev, LinkEvent::Msg(_)), "extra message event: {ev:?}");
+    }
     client.stop();
 }
 
