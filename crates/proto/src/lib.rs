@@ -304,6 +304,9 @@ pub enum Msg {
     ShellOutput { tab: String, data: Vec<u8> },
     ShellCompletion { req: u32, tab: String, start: u32, candidates: Vec<String> },
     ShellClosed { tab: String, reason: String },
+    /// Unrecognised inner kind (decode only; protocol.md 1: unknown kinds are dropped,
+    /// but a REL carrying one must still be ACKed). Encodes as `[kind]`.
+    Unknown { kind: u8 },
 }
 
 impl Msg {
@@ -341,6 +344,7 @@ impl Msg {
             ShellOutput { tab, data } => row!(61; tab, &Raw(bin(data))),
             ShellCompletion { req, tab, start, candidates } => row!(62; req, tab, start, candidates),
             ShellClosed { tab, reason } => row!(63; tab, reason),
+            Unknown { kind } => row!(*kind;),
         }
     }
 
@@ -398,7 +402,7 @@ impl Msg {
                 candidates: r.get(4)?,
             },
             63 => ShellClosed { tab: r.get(1)?, reason: r.get(2)? },
-            k => return Err(DecodeError::UnknownKind(k)),
+            k => Unknown { kind: u8::try_from(k).map_err(|_| DecodeError::UnknownKind(k))? },
         })
     }
 }
