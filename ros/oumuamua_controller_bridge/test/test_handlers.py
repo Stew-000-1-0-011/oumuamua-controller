@@ -246,3 +246,12 @@ def test_cancel_clears_current_task_immediately():
     assert h.current_task is None
     h.handle([P.RUN_TASK, 3, 2, 0, 1, 2, 3])
     assert sent[-1] == [P.RESULT, 3, True, ""]
+
+
+def test_estop_during_run_task_call_cancels_started_task():
+    io, sup, h, sent, _ = make(auto_done=False)
+    io.on_run_task = lambda: sup.on_control(1.0, ctl(estop=True))
+    h.handle([P.RUN_TASK, 1, 2, 0, 1, 2, 3])
+    names = [c[0] for c in io.calls]
+    assert names.index("run_task") < len(names) - 1 - names[::-1].index("cancel_task")
+    assert sup.mode == Mode.STOP and h.current_task is None

@@ -12,6 +12,7 @@ class FakeRosIo:
         self.task_done = None
         self.snap = Snapshot()
         self.names = []
+        self.on_run_task = None  # hook called at the start of run_task
 
     def _finish(self, name, done):
         if self.auto_done:
@@ -39,6 +40,8 @@ class FakeRosIo:
         self.calls.append(("set_pose", x, y, yaw))
 
     def run_task(self, kind, gripper, block, column, row, step, done):
+        if self.on_run_task:
+            self.on_run_task()
         self.calls.append(("run_task", kind, gripper, block, column, row))
         self.task_step, self.task_done = step, done
 

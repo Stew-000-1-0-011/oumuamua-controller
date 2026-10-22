@@ -136,20 +136,23 @@ class Handlers:
             self.sup.enter_auto("task")
             self._result(req, True, "")
 
-        def step(text):
-            with self.sup.lock:
-                if epoch == self._epoch and self.current_task is not None:
-                    self.current_task = (kind, text, args)
+            def step(text):
+                with self.sup.lock:
+                    if epoch == self._epoch and self.current_task is not None:
+                        self.current_task = (kind, text, args)
 
-        def done(ok, message):
-            with self.sup.lock:
-                if epoch != self._epoch:
-                    return  # stopped or cancelled meanwhile: stale
-                self.current_task = None
-                self.send([P.TASK_DONE, kind, bool(ok), message])
-                self.sup.leave_auto()
+            def done(ok, message):
+                with self.sup.lock:
+                    if epoch != self._epoch:
+                        return  # stopped or cancelled meanwhile: stale
+                    self.current_task = None
+                    self.send([P.TASK_DONE, kind, bool(ok), message])
+                    self.sup.leave_auto()
 
-        self.io.run_task(kind, gripper, block, column, row, step, done)
+            # Started under the lock so a stop cannot slip in between.
+            self.io.run_task(kind, gripper, block, column, row, step, done)
+            if epoch != self._epoch:  # stopped from inside the call: cancel what just began
+                self.io.cancel_task()
 
     def _cancel(self, req, m):
         with self.sup.lock:
@@ -182,7 +185,7 @@ class Handlers:
         def started(ok, message):
             with self.sup.lock:
                 if stale():
-                    if ok:  # the path may be running: undo it
+                    if ok and self.current_path is None:  # may be running, nobody newer: undo
                         self.io.stop_path(_noop)
                         self.io.set_tracker(False, _noop)
                     self._result(req, False, "cancelled")
@@ -198,7 +201,7 @@ class Handlers:
         def tracker(ok, message):
             with self.sup.lock:
                 if stale():
-                    if ok:
+                    if ok and self.current_path is None:
                         self.io.set_tracker(False, _noop)
                     self._result(req, False, "cancelled")
                     return
@@ -207,7 +210,11 @@ class Handlers:
                     return
                 self.io.start_path(name, started)
 
-        self.io.set_tracker(True, tracker)
+        with self.sup.lock:
+            if epoch == self._epoch:
+                self.io.set_tracker(True, tracker)
+            else:
+                self._result(req, False, "cancelled")
 
     def _set_tracker(self, req, m):
         on = bool(m[2])
