@@ -158,3 +158,26 @@ def test_cwd_and_poll_timeout(rig, tmp_path):
     t0 = time.monotonic()
     sm.poll(0.2)
     assert time.monotonic() - t0 < 0.5
+
+
+def test_second_tab_does_not_inherit_master_fds(rig):
+    sm, _ = rig
+    sm.open("a")
+    sm.open("b")
+    pid = sm._tabs["b"].pid
+    deadline = time.monotonic() + 2
+    while True:
+        fds = {int(x) for x in os.listdir(f"/proc/{pid}/fd")}
+        if fds <= {0, 1, 2, 255} or time.monotonic() > deadline:
+            break
+        time.sleep(0.02)
+    assert fds <= {0, 1, 2, 255}, fds
+
+
+def test_open_returns_false_when_log_unwritable(tmp_path, env):
+    blocker = tmp_path / "blocked"
+    blocker.write_text("x")
+    sm = ShellManager(blocker, lambda *a: None, lambda *a: None, env=env)
+    ok, reason = sm.open("t")
+    assert not ok and reason
+    assert sm.tabs() == []

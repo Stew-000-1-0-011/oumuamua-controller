@@ -6,11 +6,15 @@ import fcntl
 import os
 import pty
 import re
+import resource
 import select
 import signal
 import struct
 import termios
+import threading
 import time
+import traceback
+import functools
 from datetime import datetime
 from pathlib import Path
 from typing import Callable
@@ -20,18 +24,26 @@ ROWS, COLS = 24, 80
 _FLUSH_CTRL = {"\x03", "\x04", "\x1a"}
 
 
+def _locked(fn):
+    @functools.wraps(fn)
+    def wrapper(self, *a, **k):
+        with self._lock:
+            return fn(self, *a, **k)
+    return wrapper
+
+
 def _stamp() -> str:
     t = time.time()
     return time.strftime("%H:%M:%S", time.localtime(t)) + ".%03d" % int((t % 1) * 1000)
 
 
 class _Tab:
-    def __init__(self, pid: int, fd: int, logdir: Path, logfile: Path):
+    def __init__(self, pid: int, fd: int, logdir: Path, logfile: Path, log):
         self.pid = pid
         self.fd = fd
         self.logdir = logdir
         self.logfile = logfile
-        self.log = open(logfile, "a", encoding="utf-8", buffering=1)
+        self.log = log
         self.replay = bytearray()
         self.in_buf = ""
         self.out_buf = b""
@@ -48,6 +60,7 @@ class ShellManager:
         self.replay_bytes = replay_bytes
         self.env = env
         self._tabs: dict[str, _Tab] = {}
+        self._lock = threading.RLock()
 
     # ---- helpers -------------------------------------------------------
     def _logline(self, tab: _Tab, prefix: str, text: str) -> None:
@@ -97,6 +110,7 @@ class ShellManager:
             time.sleep(0.01)
 
     # ---- API -----------------------------------------------------------
+    @_locked
     def open(self, tab: str) -> tuple[bool, str]:
         if not isinstance(tab, str) or not NAME_RE.fullmatch(tab):
             return False, "invalid tab name"
@@ -115,18 +129,42 @@ class ShellManager:
             env = dict(self.env)
             argv = ["bash", "--norc", "--noprofile", "-i"]
         env["TERM"] = "xterm-256color"
-        pid, fd = pty.fork()
+        try:
+            log = open(logfile, "a", encoding="utf-8", buffering=1)
+        except OSError as e:
+            return False, f"log file: {e}"
+        try:
+            maxfd = min(resource.getrlimit(resource.RLIMIT_NOFILE)[0], 1 << 16)
+        except (ValueError, OSError):
+            maxfd = 4096
+        try:
+            pid, fd = pty.fork()
+        except OSError as e:
+            log.close()
+            return False, f"fork failed: {e}"
         if pid == 0:
             try:
+                os.closerange(3, maxfd)
                 fcntl.ioctl(0, termios.TIOCSWINSZ, struct.pack("HHHH", ROWS, COLS, 0, 0))
                 os.execvpe("bash", argv, env)
             finally:
                 os._exit(127)
-        fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack("HHHH", ROWS, COLS, 0, 0))
-        fcntl.fcntl(fd, fcntl.F_SETFL, fcntl.fcntl(fd, fcntl.F_GETFL) | os.O_NONBLOCK)
-        self._tabs[tab] = _Tab(pid, fd, logdir, logfile)
+        try:
+            fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack("HHHH", ROWS, COLS, 0, 0))
+            fcntl.fcntl(fd, fcntl.F_SETFL, fcntl.fcntl(fd, fcntl.F_GETFL) | os.O_NONBLOCK)
+        except OSError as e:
+            try:
+                os.kill(pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            self._reap(pid, 1.0)
+            os.close(fd)
+            log.close()
+            return False, f"pty setup failed: {e}"
+        self._tabs[tab] = _Tab(pid, fd, logdir, logfile, log)
         return True, ""
 
+    @_locked
     def write(self, tab: str, data: bytes) -> tuple[bool, str]:
         t = self._tabs.get(tab)
         if t is None:
@@ -150,11 +188,14 @@ class ShellManager:
             except BlockingIOError:
                 if time.monotonic() > deadline:
                     return False, "shell busy"
-                select.select([], [t.fd], [], 0.05)
+                p = select.poll()
+                p.register(t.fd, select.POLLOUT)
+                p.poll(50)
             except OSError as e:
                 return False, f"write failed: {e.strerror}"
         return True, ""
 
+    @_locked
     def close(self, tab: str) -> tuple[bool, str]:
         t = self._tabs.pop(tab, None)
         if t is None:
@@ -174,6 +215,7 @@ class ShellManager:
         self._finish(tab, t)
         return True, ""
 
+    @_locked
     def rename(self, tab: str, new: str) -> tuple[bool, str]:
         t = self._tabs.get(tab)
         if t is None:
@@ -203,13 +245,16 @@ class ShellManager:
         self._tabs[new] = t
         return True, ""
 
+    @_locked
     def replay(self, tab: str) -> bytes:
         t = self._tabs.get(tab)
         return bytes(t.replay) if t else b""
 
+    @_locked
     def tabs(self) -> list[str]:
         return list(self._tabs)
 
+    @_locked
     def cwd(self, tab: str) -> str:
         t = self._tabs.get(tab)
         if t is None:
@@ -219,15 +264,19 @@ class ShellManager:
         except OSError:
             return ""
 
+    @_locked
     def poll(self, timeout_s: float) -> None:
         if not self._tabs:
             if timeout_s > 0:
                 time.sleep(min(timeout_s, 0.05))
             return
         by_fd = {t.fd: name for name, t in self._tabs.items()}
+        p = select.poll()
+        for fd in by_fd:
+            p.register(fd, select.POLLIN)
         try:
-            ready, _, _ = select.select(list(by_fd), [], [], max(0.0, timeout_s))
-        except (OSError, ValueError):
+            ready = [fd for fd, _ in p.poll(max(0.0, timeout_s) * 1000)]
+        except OSError:
             return
         for fd in ready:
             name = by_fd[fd]
@@ -257,10 +306,11 @@ class ShellManager:
         try:
             self.on_output(name, data)
         except Exception:
-            pass
+            traceback.print_exc()
 
     def _exited(self, name: str, t: _Tab) -> None:
-        del self._tabs[name]
+        if self._tabs.pop(name, None) is None:
+            return
         if not self._reap(t.pid, 0.3):
             try:
                 os.kill(t.pid, signal.SIGKILL)
@@ -271,8 +321,9 @@ class ShellManager:
         try:
             self.on_closed(name, "exited")
         except Exception:
-            pass
+            traceback.print_exc()
 
+    @_locked
     def close_all(self) -> None:
         for name in list(self._tabs):
             self.close(name)
