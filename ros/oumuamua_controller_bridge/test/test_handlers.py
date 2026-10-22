@@ -184,3 +184,65 @@ def test_malformed_gets_failed_result():
     assert sent[-1][:3] == [P.RESULT, 1, False]
     h.handle([999, 1])
     h.handle([])
+
+
+def test_estop_while_tracker_pending_blocks_start_path():
+    io, sup, h, sent, _ = make(auto_done=False)
+    h.handle([P.START_PATH, 1, "p"])
+    assert io.calls == [("set_tracker", True)]
+    sup.on_control(1.0, ctl(estop=True))
+    assert sup.mode == Mode.STOP
+    io.calls.clear()
+    name, done = io.pending[0]
+    assert name == "set_tracker"
+    done(True, "")
+    assert ("start_path", "p") not in io.calls
+    assert ("set_tracker", False) in io.calls
+    assert sent[-1] == [P.RESULT, 1, False, "cancelled"]
+    assert sup.mode == Mode.STOP and h.current_path is None
+
+
+def test_estop_while_start_path_pending_undoes_path():
+    io, sup, h, sent, _ = make(auto_done=False)
+    h.handle([P.START_PATH, 1, "p"])
+    io.pending.pop(0)[1](True, "")
+    assert io.calls[-1] == ("start_path", "p")
+    sup.on_control(1.0, ctl(estop=True))
+    io.calls.clear()
+    [d for n, d in io.pending if n == "start_path"][0](True, "")  # late completion
+    assert ("stop_path",) in io.calls and ("set_tracker", False) in io.calls
+    assert sup.mode == Mode.STOP and h.current_path is None
+
+
+def test_cancel_while_start_path_pending():
+    io, sup, h, sent, _ = make(auto_done=False)
+    h.handle([P.START_PATH, 1, "p"])
+    io.pending.pop(0)[1](True, "")
+    start_done = [d for n, d in io.pending if n == "start_path"][0]
+    h.handle([P.CANCEL, 2])
+    start_done(True, "")
+    assert sup.mode == Mode.MANUAL and h.current_path is None
+    assert [m for m in sent if m[1] == 1][-1] == [P.RESULT, 1, False, "cancelled"]
+
+
+def test_late_task_done_after_estop_release_is_ignored():
+    io, sup, h, sent, _ = make(auto_done=False)
+    h.handle([P.RUN_TASK, 1, 2, 0, 1, 2, 3])
+    old_done, old_step = io.task_done, io.task_step
+    sup.on_control(1.0, ctl(estop=True))
+    assert h.current_task is None
+    sup.on_control(1.02, ctl())
+    assert sup.release() == (True, "")
+    sent.clear()
+    old_step("late")
+    old_done(False, "cancelled")
+    assert sent == [] and sup.mode == Mode.MANUAL and h.current_task is None
+
+
+def test_cancel_clears_current_task_immediately():
+    io, sup, h, sent, _ = make(auto_done=False)
+    h.handle([P.RUN_TASK, 1, 2, 0, 1, 2, 3])
+    h.handle([P.CANCEL, 2])
+    assert h.current_task is None
+    h.handle([P.RUN_TASK, 3, 2, 0, 1, 2, 3])
+    assert sent[-1] == [P.RESULT, 3, True, ""]

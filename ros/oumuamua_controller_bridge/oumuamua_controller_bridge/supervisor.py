@@ -1,6 +1,8 @@
 """Stop/manual/auto supervisor (no rclpy)."""
 import enum
+import functools
 import math
+import threading
 from typing import Callable, Optional
 
 from .rosio import RosIo
@@ -16,9 +18,18 @@ def _noop(ok, msg):
     pass
 
 
+def _locked(fn):
+    @functools.wraps(fn)
+    def wrapper(self, *a, **k):
+        with self.lock:
+            return fn(self, *a, **k)
+    return wrapper
+
+
 class Supervisor:
     def __init__(self, io: RosIo, lift_max: float, timeout_s: float = 0.3,
                  max_v: float = 2.0, max_w: float = 2.5):
+        self.lock = threading.RLock()
         self.io = io
         self.lift_max = lift_max
         self.timeout_s = timeout_s
@@ -36,6 +47,7 @@ class Supervisor:
         self._jog = [0, 0]
 
     # -- inputs --------------------------------------------------------
+    @_locked
     def on_control(self, now_s: float, c: dict) -> None:
         self._now = now_s
         self._last_rx = now_s
@@ -61,6 +73,7 @@ class Supervisor:
                     self.io.lift_cancel(g)
         self._jog = jogs
 
+    @_locked
     def tick(self, now_s: float, yaw: Optional[float]) -> None:
         self._now = now_s
         if self.mode != Mode.STOP and self._timed_out(now_s):
@@ -79,6 +92,7 @@ class Supervisor:
             self.io.publish_cmd_vel(vx, vy, wz)
 
     # -- transitions ---------------------------------------------------
+    @_locked
     def release(self):
         if self._estop:
             return False, "estop is still pressed"
@@ -89,16 +103,19 @@ class Supervisor:
             self.stop_reason = ""
         return True, ""
 
+    @_locked
     def enter_auto(self, label: str) -> None:
         if self.mode != Mode.STOP:
             self.mode = Mode.AUTO
             self.auto_label = label
 
+    @_locked
     def leave_auto(self) -> None:
         if self.mode == Mode.AUTO:
             self.mode = Mode.MANUAL
             self.auto_label = ""
 
+    @_locked
     def cancel_to_manual(self) -> None:
         self.leave_auto()
 
@@ -106,6 +123,7 @@ class Supervisor:
     def _timed_out(self, now_s: float) -> bool:
         return self._last_rx is None or now_s - self._last_rx > self.timeout_s
 
+    @_locked
     def _enter_stop(self, reason: str) -> None:
         self.mode = Mode.STOP
         self.stop_reason = reason

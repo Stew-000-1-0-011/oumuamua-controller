@@ -22,6 +22,7 @@ class Handlers:
         self.log_level = 20
         self.current_task: Optional[tuple] = None  # (kind, step, (gripper, block, column, row))
         self.current_path: Optional[tuple] = None  # (name, active)
+        self._epoch = 0
         sup.on_stop = self._on_stop
         self._table = {
             P.RELEASE_STOP: self._release_stop,
@@ -42,8 +43,14 @@ class Handlers:
             P.SHELL_RENAME: self._shell_rename,
         }
 
-    def _on_stop(self):
+    def _invalidate(self):
+        """Forget running work; late callbacks of older work are stale."""
+        self._epoch += 1
+        self.current_task = None
         self.current_path = None
+
+    def _on_stop(self):
+        self._invalidate()
 
     def _result(self, req, ok, message=""):
         self.send([P.RESULT, req, bool(ok), message])
@@ -116,67 +123,89 @@ class Handlers:
 
     def _run_task(self, req, m):
         kind, gripper, block, column, row = (int(x) for x in m[2:7])
-        if self._busy():
-            self._result(req, False, "busy")
-            return
-        if self.sup.mode == Mode.STOP:
-            self._result(req, False, f"stopped: {self.sup.stop_reason}")
-            return
-        args = (gripper, block, column, row)
-        self.current_task = (kind, "", args)
-        self.sup.enter_auto("task")
+        with self.sup.lock:
+            if self._busy():
+                self._result(req, False, "busy")
+                return
+            if self.sup.mode == Mode.STOP:
+                self._result(req, False, f"stopped: {self.sup.stop_reason}")
+                return
+            args = (gripper, block, column, row)
+            epoch = self._epoch
+            self.current_task = (kind, "", args)
+            self.sup.enter_auto("task")
+            self._result(req, True, "")
 
         def step(text):
-            if self.current_task is not None:
-                self.current_task = (kind, text, args)
+            with self.sup.lock:
+                if epoch == self._epoch and self.current_task is not None:
+                    self.current_task = (kind, text, args)
 
         def done(ok, message):
-            self.current_task = None
-            self.send([P.TASK_DONE, kind, bool(ok), message])
-            self.sup.leave_auto()
+            with self.sup.lock:
+                if epoch != self._epoch:
+                    return  # stopped or cancelled meanwhile: stale
+                self.current_task = None
+                self.send([P.TASK_DONE, kind, bool(ok), message])
+                self.sup.leave_auto()
 
-        self._result(req, True, "")
         self.io.run_task(kind, gripper, block, column, row, step, done)
 
     def _cancel(self, req, m):
-        self.io.cancel_task()
-        self.io.stop_path(_noop)
-        self.io.set_tracker(False, _noop)
-        self.sup.cancel_to_manual()
-        self.current_path = None
-        self._result(req, True, "")
+        with self.sup.lock:
+            self._invalidate()
+            self.io.cancel_task()
+            self.io.stop_path(_noop)
+            self.io.set_tracker(False, _noop)
+            self.sup.cancel_to_manual()
+            self._result(req, True, "")
 
     def _start_path(self, req, m):
         name = str(m[2])
-        if self._busy():
-            self._result(req, False, "busy")
-            return
-        if self.sup.mode == Mode.STOP:
-            self._result(req, False, f"stopped: {self.sup.stop_reason}")
-            return
-        self.current_path = (name, False)
+        with self.sup.lock:
+            if self._busy():
+                self._result(req, False, "busy")
+                return
+            if self.sup.mode == Mode.STOP:
+                self._result(req, False, f"stopped: {self.sup.stop_reason}")
+                return
+            epoch = self._epoch
+            self.current_path = (name, False)
 
         def fail(message):
             self.current_path = None
             self._result(req, False, message)
 
+        def stale():
+            return epoch != self._epoch or self.sup.mode == Mode.STOP
+
         def started(ok, message):
-            if not ok:
-                self.io.set_tracker(False, _noop)
-                fail(message)
-                return
-            if self.sup.mode == Mode.STOP:
-                fail(f"stopped: {self.sup.stop_reason}")
-                return
-            self.sup.enter_auto(name)
-            self.current_path = (name, True)
-            self._result(req, True, "")
+            with self.sup.lock:
+                if stale():
+                    if ok:  # the path may be running: undo it
+                        self.io.stop_path(_noop)
+                        self.io.set_tracker(False, _noop)
+                    self._result(req, False, "cancelled")
+                    return
+                if not ok:
+                    self.io.set_tracker(False, _noop)
+                    fail(message)
+                    return
+                self.sup.enter_auto(name)
+                self.current_path = (name, True)
+                self._result(req, True, "")
 
         def tracker(ok, message):
-            if not ok:
-                fail(message)
-                return
-            self.io.start_path(name, started)
+            with self.sup.lock:
+                if stale():
+                    if ok:
+                        self.io.set_tracker(False, _noop)
+                    self._result(req, False, "cancelled")
+                    return
+                if not ok:
+                    fail(message)
+                    return
+                self.io.start_path(name, started)
 
         self.io.set_tracker(True, tracker)
 
