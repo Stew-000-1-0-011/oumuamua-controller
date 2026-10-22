@@ -1,0 +1,8 @@
+[package]
+name = "proto"
+version = "0.1.0"
+edition.workspace = true
+
+[dependencies]
+rmpv = "1"
+thiserror = "2"
