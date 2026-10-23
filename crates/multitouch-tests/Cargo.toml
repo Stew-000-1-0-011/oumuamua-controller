@@ -1,0 +1,12 @@
+[package]
+name = "multitouch-tests"
+version = "0.1.0"
+edition.workspace = true
+publish = false
+
+[dependencies]
+slint = { version = "=1.18.1", default-features = false, features = ["std", "compat-1-2"] }
+
+[dev-dependencies]
+i-slint-backend-testing = "=1.18.1"
+i-slint-core = "=1.18.1"

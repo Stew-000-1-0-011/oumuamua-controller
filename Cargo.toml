@@ -1,6 +1,11 @@
 [workspace]
-members = ["crates/proto", "crates/link", "crates/term", "crates/app"]
+members = ["crates/proto", "crates/link", "crates/term", "crates/app", "crates/multitouch-tests"]
+exclude = ["third_party"]
 resolver = "3"
 
 [workspace.package]
 edition = "2024"
+
+# Slint 1.18.1 の i-slint-core を手元のコピーに差し替える(マルチタッチ対応。third_party/i-slint-core/MULTITOUCH.md 参照)
+[patch.crates-io]
+i-slint-core = { path = "third_party/i-slint-core" }
