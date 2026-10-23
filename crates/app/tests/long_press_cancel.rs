@@ -28,7 +28,9 @@ slint::slint! {
         height: 500px;
         callback forget-pressed();
         callback forget-confirmed();
+        in property <bool> shown: true;
         auto := AutoPanel {
+            visible: root.shown;
             forget-enabled: true;
             forget-pressed => { root.forget-pressed(); }
             forget-confirmed => { root.forget-confirmed(); }
@@ -115,4 +117,29 @@ fn forget_long_press_cancelled_never_confirms() {
     elapse(1100);
     assert_eq!(confirmed.get(), 1);
     touch(w, 0, x, y, Ended);
+}
+
+#[test]
+fn forget_long_press_does_not_confirm_while_hidden() {
+    i_slint_backend_testing::init_no_event_loop();
+    let h = AHost::new().unwrap();
+    let pressed = Rc::new(Cell::new(0));
+    let confirmed = Rc::new(Cell::new(0));
+    let p = pressed.clone();
+    h.on_forget_pressed(move || p.set(p.get() + 1));
+    let c = confirmed.clone();
+    h.on_forget_confirmed(move || c.set(c.get() + 1));
+    h.show().unwrap();
+    let w = h.window();
+    let (x, y) = find_button(w, &pressed);
+    touch(w, 0, x, y, Started);
+    elapse(300);
+    // The page changes with the finger still down.
+    h.set_shown(false);
+    elapse(50);
+    elapse(2000);
+    assert_eq!(confirmed.get(), 0, "a hidden panel must not confirm 忘れさせる");
+    touch(w, 0, x, y, Ended);
+    elapse(2000);
+    assert_eq!(confirmed.get(), 0);
 }

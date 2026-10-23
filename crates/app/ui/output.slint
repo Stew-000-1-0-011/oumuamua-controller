@@ -1,4 +1,4 @@
-import { Theme } from "theme.slint";
+import { Theme, ScreenState } from "theme.slint";
 import { MapPane } from "map.slint";
 import { ConsolePanel } from "console.slint";
 
@@ -14,6 +14,8 @@ component Cell inherits Text {
 // kept free for the console (Task 15).
 export component OutputScreen inherits Rectangle {
     background: Theme.bg;
+    init => { ScreenState.output-active = root.visible; }
+    changed visible => { ScreenState.output-active = root.visible; }
 
     in property <string> pose-text: "位置 -";
     in property <string> vel-text: "速度 -";

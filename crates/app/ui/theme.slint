@@ -1,4 +1,10 @@
 // Shared colours and sizes. Tap targets are at least `tap` (44px).
+// Whether the output screen (console and keyboard) is showing. Hidden screens stay alive, and
+// a TouchArea keeps `pressed` while hidden, so held-key timers must also check this.
+export global ScreenState {
+    in-out property <bool> output-active: true;
+}
+
 export global Theme {
     out property <length> tap: 48px;
     out property <length> strip-width: 84px;

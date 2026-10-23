@@ -86,12 +86,13 @@ export component AutoPanel inherits Rectangle {
     property <bool> holds-selected: root.place-gripper == 0 ? root.hold-left : root.hold-right;
     property <bool> can-place: root.usable && root.holds-selected && root.sel-column >= 0 && root.sel-row >= 0;
 
+    changed visible => { if !root.visible { root.forget-armed = false; } }
     changed forget-enabled => { if !root.forget-enabled { root.forget-armed = false; } }
     // 長押し: fires once after 1 s of an uninterrupted press.
     property <bool> forget-armed: false;
     forget-timer := Timer {
         interval: 1s;
-        running: root.forget-armed && root.forget-enabled;
+        running: root.forget-armed && root.forget-enabled && root.visible;
         triggered => {
             root.forget-armed = false;
             root.forget-confirmed();

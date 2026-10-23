@@ -1,4 +1,4 @@
-import { Theme } from "theme.slint";
+import { Theme, ScreenState } from "theme.slint";
 
 // One key. `cap` is the name given to Console::key. Keys that `repeat` fire on press, then
 // after a hold repeat every 50 ms.
@@ -13,6 +13,7 @@ component Key inherits Rectangle {
     callback fire(string);
 
     property <bool> repeating: false;
+    property <bool> hidden: !ScreenState.output-active;
 
     horizontal-stretch: root.weight * 100;
     min-height: 28px;
@@ -35,15 +36,16 @@ component Key inherits Rectangle {
             if !self.pressed { root.repeating = false; }
         }
     }
+    changed hidden => { if root.hidden { root.repeating = false; } }
     // First repeat after 400 ms of holding, then every 50 ms.
     Timer {
         interval: 400ms;
-        running: ta.pressed && root.repeat && !root.repeating;
+        running: ta.pressed && root.repeat && !root.repeating && ScreenState.output-active;
         triggered => { root.repeating = true; root.fire(root.cap); }
     }
     Timer {
         interval: 50ms;
-        running: ta.pressed && root.repeat && root.repeating;
+        running: ta.pressed && root.repeat && root.repeating && ScreenState.output-active;
         triggered => { root.fire(root.cap); }
     }
 }

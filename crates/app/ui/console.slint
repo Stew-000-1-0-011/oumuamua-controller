@@ -2,7 +2,7 @@
 import "fonts/DejaVuSansMono-subset.ttf";
 import "fonts/DejaVuSansMono-subset-Bold.ttf";
 import { ScrollView, ListView } from "std-widgets.slint";
-import { Theme } from "theme.slint";
+import { Theme, ScreenState } from "theme.slint";
 import { Keyboard } from "keyboard.slint";
 
 export struct ConsoleSpan { text: string, fg: color, bg: color, has-bg: bool, bold: bool }
@@ -58,6 +58,7 @@ component Chip inherits Rectangle {
     callback clicked();
     callback held();
     property <bool> fired: false;
+    property <bool> hidden: !ScreenState.output-active;
 
     min-width: 44px;
     min-height: 44px;
@@ -80,9 +81,11 @@ component Chip inherits Rectangle {
         }
         changed pressed => { if self.pressed { root.fired = false; } }
     }
+    // Hidden with a finger down: do not fire a long press when it shows again.
+    changed hidden => { if root.hidden { root.fired = true; } }
     Timer {
         interval: 600ms;
-        running: ta.pressed && !root.fired;
+        running: ta.pressed && !root.fired && ScreenState.output-active;
         triggered => { root.fired = true; root.held(); }
     }
 }
