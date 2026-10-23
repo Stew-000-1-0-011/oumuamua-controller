@@ -1,12 +1,14 @@
 //! Connects the Slint window to the link: callbacks in, a 33 ms timer out.
 
 use crate::auto;
+use crate::console::{self, Console, PromptKind};
 use crate::manual::{self, Manual};
 use crate::model::{AppModel, ConnState, StopLatch};
 use crate::map::{self, PaneState, Scene};
-use crate::{Beacon, MainWindow, PresetInfo, WheelInfo, storage};
+use crate::{Beacon, ConsoleRow, ConsoleSpan, ConsoleState, ConsoleTabInfo, MainWindow, PresetInfo, WheelInfo, storage};
 use link::{Client, ControlInput, Discovery, LinkEvent};
 use proto::{Mode, Msg};
+use term::{ModState, Modifier, Row};
 use slint::{ComponentHandle, Model, ModelRc, SharedString, Timer, TimerMode, VecModel};
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -114,6 +116,77 @@ struct Glue {
     done_seen: u64,
     /// Last lists given to the window: blocks, cells, paths.
     auto_shown: (Vec<i32>, Vec<i32>, Vec<String>),
+    console: Console,
+    console_rows: Rc<VecModel<ConsoleRow>>,
+    /// The rows now in `console_rows`, to update only what changed.
+    console_shown: Vec<Row>,
+    /// `(active tab, revision)` of the rows shown, and when they were last rebuilt.
+    console_rev: Option<(usize, u64)>,
+    console_built: Option<Instant>,
+    /// Characters per output row, from the width of the output area.
+    console_cols: usize,
+    console_tabs_shown: Vec<(String, bool)>,
+    console_quick_shown: Vec<String>,
+    console_cands_shown: Vec<String>,
+    /// Shell requests whose RESULT may undo a local change: `(req, what, sent)`.
+    shell_reqs: Vec<(u32, ShellReq, Instant)>,
+    /// When the tabs not reported by the robot after a (re)connect are dropped.
+    sync_deadline: Option<Instant>,
+    /// When the histories are written (debounce).
+    persist_at: Option<Instant>,
+}
+
+/// How long after CONNECTED the robot's SHELL_OPENED are awaited.
+const SYNC_WAIT: Duration = Duration::from_millis(1500);
+/// Console rows are rebuilt at most this often.
+const CONSOLE_INTERVAL: Duration = Duration::from_millis(100);
+const PERSIST_DELAY: Duration = Duration::from_secs(1);
+/// Width of one output cell (an ASCII character) in logical pixels at 14 px text.
+const CELL_PX: f32 = 8.0;
+const LOG_LEVELS: [u8; 4] = [10, 20, 30, 40];
+
+#[derive(Debug, Clone, PartialEq)]
+enum ShellReq {
+    Open(String),
+    Rename { old: String, new: String },
+}
+
+fn slint_color(c: Option<term::Color>, default: (u8, u8, u8)) -> slint::Color {
+    let (r, g, b) = c.map_or(default, console::palette);
+    slint::Color::from_rgb_u8(r, g, b)
+}
+
+fn console_row(r: &Row) -> ConsoleRow {
+    match r {
+        Row::Folded { block, hidden } => ConsoleRow {
+            folded: true,
+            hidden: *hidden as i32,
+            block: *block as i32,
+            spans: ModelRc::default(),
+        },
+        Row::Line(l) => {
+            let spans: Vec<ConsoleSpan> = l
+                .spans
+                .iter()
+                .map(|s| ConsoleSpan {
+                    text: s.text.as_str().into(),
+                    fg: slint_color(s.fg, (0xe8, 0xed, 0xf3)),
+                    bg: slint_color(s.bg, (0, 0, 0)),
+                    has_bg: s.bg.is_some(),
+                    bold: s.bold,
+                })
+                .collect();
+            ConsoleRow { folded: false, hidden: 0, block: 0, spans: ModelRc::from(Rc::new(VecModel::from(spans))) }
+        }
+    }
+}
+
+fn mod_int(s: ModState) -> i32 {
+    match s {
+        ModState::Off => 0,
+        ModState::Once => 1,
+        ModState::Locked => 2,
+    }
 }
 
 impl Glue {
@@ -389,15 +462,21 @@ impl Glue {
         let results = &self.model.results;
         let message = &mut self.manual_message;
         let keep = Duration::from_millis(manual::REQ_KEEP_MS);
+        let mut logs: Vec<(u8, String)> = Vec::new();
         self.manual_reqs.retain(|&(req, is_reset, sent)| {
             let Some((_, ok, msg)) = results.iter().find(|r| r.0 == req) else { return sent.elapsed() < keep };
             if !ok {
                 *message = if msg.is_empty() { "失敗しました".to_owned() } else { msg.clone() };
+                logs.push((40, message.clone()));
             } else if is_reset {
                 *message = if msg.is_empty() { "0 点にしました".to_owned() } else { msg.clone() };
+                logs.push((20, message.clone()));
             }
             false
         });
+        for (level, text) in logs {
+            self.console.log_local(level, "manual", &text);
+        }
     }
 
     fn refresh_manual(&mut self, w: &MainWindow) {
@@ -594,6 +673,7 @@ impl Glue {
         let results = &self.model.results;
         let message = &mut self.auto_message;
         let keep = Duration::from_millis(manual::REQ_KEEP_MS);
+        let mut logs: Vec<(u8, String)> = Vec::new();
         self.auto_reqs.retain(|(req, label, sent)| {
             let Some((_, ok, msg)) = results.iter().find(|r| r.0 == *req) else { return sent.elapsed() < keep };
             *message = if *ok {
@@ -601,8 +681,12 @@ impl Glue {
             } else {
                 (auto::done_text(label, false, msg), false)
             };
+            logs.push((if message.1 { 20 } else { 40 }, message.0.clone()));
             false
         });
+        for (level, text) in logs {
+            self.console.log_local(level, "auto", &text);
+        }
         if let Some(t) = self.model.state().and_then(|s| s.task.as_ref()) {
             self.last_task = Some((t.kind, t.args));
         }
@@ -616,6 +700,7 @@ impl Glue {
                     _ => auto::task_label(*kind, [0; 4]),
                 };
                 self.auto_message = (auto::done_text(&label, *ok, msg), *ok);
+                self.console.log_local(if *ok { 20 } else { 40 }, "auto", &self.auto_message.0);
                 self.last_task = None;
             }
         }
@@ -679,6 +764,167 @@ impl Glue {
             w.set_auto_paths(ModelRc::from(Rc::new(VecModel::from(items))));
             self.auto_shown.2 = paths;
         }
+    }
+
+    // ---- console ----
+
+    /// Stamps request ids on console messages and sends them.
+    fn console_send(&mut self, msgs: Vec<Msg>) {
+        let Some(c) = &self.client else { return };
+        for m in msgs {
+            let req = c.next_req();
+            let m = console::stamp(m, req);
+            match &m {
+                Msg::ShellOpen { tab, .. } => self.shell_reqs.push((req, ShellReq::Open(tab.clone()), Instant::now())),
+                Msg::ShellRename { tab, new_name, .. } => self
+                    .shell_reqs
+                    .push((req, ShellReq::Rename { old: tab.clone(), new: new_name.clone() }, Instant::now())),
+                _ => {}
+            }
+            c.send(m);
+        }
+    }
+
+    fn console_do(&mut self, f: impl FnOnce(&mut Console) -> Vec<Msg>) {
+        let msgs = f(&mut self.console);
+        self.console_send(msgs);
+        self.refresh_console();
+    }
+
+    fn console_set_level(&mut self, idx: i32) {
+        let Some(&level) = usize::try_from(idx).ok().and_then(|i| LOG_LEVELS.get(i)) else { return };
+        let m = self.console.set_log_filter(level);
+        self.console_send(vec![m]);
+        self.refresh_console();
+    }
+
+    /// Shell events from the robot, the end of the reconnect wait, RESULTs of tab requests and
+    /// debounced saving.
+    fn poll_console(&mut self, connected_now: bool) {
+        if connected_now {
+            self.console.begin_sync();
+            self.sync_deadline = Some(Instant::now() + SYNC_WAIT);
+            let m = self.console.set_log_filter(self.console.log_filter());
+            self.console_send(vec![m]);
+        }
+        for ev in self.model.take_shell_events() {
+            self.console.on_event(ev);
+        }
+        if self.sync_deadline.is_some_and(|t| Instant::now() >= t) {
+            self.sync_deadline = None;
+            self.console.end_sync();
+        }
+        let results = &self.model.results;
+        let console = &mut self.console;
+        let keep = Duration::from_millis(manual::REQ_KEEP_MS);
+        self.shell_reqs.retain(|(req, what, sent)| {
+            let Some((_, ok, msg)) = results.iter().find(|r| r.0 == *req) else { return sent.elapsed() < keep };
+            if !ok {
+                let why = if msg.is_empty() { "失敗しました" } else { msg.as_str() };
+                match what {
+                    ShellReq::Open(tab) => {
+                        console.forget_tab(tab);
+                        console.log_local(40, "console", &format!("タブ {tab} を開けません: {why}"));
+                    }
+                    ShellReq::Rename { old, new } => {
+                        console.undo_rename(new, old);
+                        console.log_local(40, "console", &format!("名前を変えられません: {why}"));
+                    }
+                }
+            }
+            false
+        });
+        if self.console.take_dirty() {
+            self.persist_at.get_or_insert(Instant::now() + PERSIST_DELAY);
+        }
+        if self.persist_at.is_some_and(|t| Instant::now() >= t) {
+            self.persist_at = None;
+            self.console.save();
+        }
+    }
+
+    /// Pushes the console state into the window. The row model is rebuilt only when the
+    /// visible tab changed, at most every 100 ms (at once after a tab switch).
+    fn refresh_console(&mut self) {
+        let Some(w) = self.window.upgrade() else { return };
+        if !w.get_connected() || w.get_page() != 0 {
+            return;
+        }
+        let cs = w.global::<ConsoleState>();
+        let active = self.console.active();
+        let tabs: Vec<(String, bool)> =
+            self.console.tabs().into_iter().enumerate().map(|(i, n)| (n, i == active)).collect();
+        if tabs != self.console_tabs_shown {
+            let items: Vec<ConsoleTabInfo> =
+                tabs.iter().map(|(n, a)| ConsoleTabInfo { name: n.as_str().into(), active: *a }).collect();
+            cs.set_tabs(ModelRc::from(Rc::new(VecModel::from(items))));
+            self.console_tabs_shown = tabs;
+        }
+        let (text, cur) = self.console.input_display();
+        let split = text.char_indices().nth(cur).map_or(text.len(), |(i, _)| i);
+        cs.set_input_before(text[..split].into());
+        cs.set_input_after(text[split..].into());
+        let cands = self.console.candidates().to_vec();
+        if cands != self.console_cands_shown {
+            let items: Vec<SharedString> = cands.iter().map(|c| c.as_str().into()).collect();
+            cs.set_candidates(ModelRc::from(Rc::new(VecModel::from(items))));
+            self.console_cands_shown = cands;
+        }
+        let quick = self.console.quick_commands().to_vec();
+        if quick != self.console_quick_shown {
+            let items: Vec<SharedString> = quick.iter().map(|c| c.as_str().into()).collect();
+            cs.set_quick(ModelRc::from(Rc::new(VecModel::from(items))));
+            self.console_quick_shown = quick;
+        }
+        cs.set_is_shell(self.console.active_is_shell());
+        cs.set_log_level(LOG_LEVELS.iter().position(|&l| l == self.console.log_filter()).unwrap_or(1) as i32);
+        cs.set_ctrl(mod_int(self.console.mod_state(Modifier::Ctrl)));
+        cs.set_alt(mod_int(self.console.mod_state(Modifier::Alt)));
+        cs.set_shift(mod_int(self.console.mod_state(Modifier::Shift)));
+        cs.set_sym(self.console.sym());
+        cs.set_bottom_seq(self.console.submit_seq() as i32);
+        match self.console.prompt() {
+            Some(p) => {
+                cs.set_prompt_title(
+                    match &p.kind {
+                        PromptKind::New => "新しいタブの名前".to_owned(),
+                        PromptKind::Rename(i) => {
+                            format!("「{}」の新しい名前", self.console.tabs().get(*i).cloned().unwrap_or_default())
+                        }
+                    }
+                    .into(),
+                );
+                cs.set_prompt_text(p.text.as_str().into());
+                cs.set_prompt_error(p.error.clone().unwrap_or_default().into());
+                cs.set_prompt_active(true);
+            }
+            None => cs.set_prompt_active(false),
+        }
+        let rev = (active, self.console.view_rev());
+        if self.console_rev == Some(rev) {
+            return;
+        }
+        let switched = self.console_rev.is_none_or(|(a, _)| a != active);
+        if !switched && self.console_built.is_some_and(|t| t.elapsed() < CONSOLE_INTERVAL) {
+            return;
+        }
+        let cols = self.console_cols;
+        let new: Vec<Row> = self.console.rows().iter().flat_map(|r| console::wrap_row(r, cols)).collect();
+        let m = &self.console_rows;
+        let common = self.console_shown.iter().zip(&new).take_while(|(a, b)| a == b).count();
+        let old_len = m.row_count();
+        for (i, r) in new.iter().enumerate().take(old_len).skip(common) {
+            m.set_row_data(i, console_row(r));
+        }
+        for r in new.iter().skip(old_len) {
+            m.push(console_row(r));
+        }
+        while m.row_count() > new.len() {
+            m.remove(m.row_count() - 1);
+        }
+        self.console_shown = new;
+        self.console_rev = Some(rev);
+        self.console_built = Some(Instant::now());
     }
 
     fn push_control(&self) {
@@ -756,7 +1002,9 @@ impl Glue {
             }
         }
         let got_events = !events.is_empty();
+        let mut connected_now = false;
         for ev in events {
+            connected_now |= matches!(ev, LinkEvent::Connected { .. });
             if matches!(ev, LinkEvent::Rejected { .. } | LinkEvent::Bye { .. }) {
                 // The client thread idles after these; release it so Connect starts a fresh one.
                 self.client = None;
@@ -778,8 +1026,10 @@ impl Glue {
         }
         self.collect_manual_results();
         self.collect_auto_results();
+        self.poll_console(connected_now);
         self.sync_manual();
         self.refresh();
+        self.refresh_console();
         if let Some(w) = self.window.upgrade()
             && w.get_connected()
             && w.get_page() == 1
@@ -854,6 +1104,8 @@ pub fn start(window: &MainWindow) -> Rc<RefCell<GlueHandle>> {
     let beacons_model = Rc::new(VecModel::default());
     window.set_beacons(ModelRc::from(beacons_model.clone()));
     window.set_target(SharedString::from(storage::load(TARGET_FILE).unwrap_or_default().trim()));
+    let console_rows = Rc::new(VecModel::default());
+    window.global::<ConsoleState>().set_rows(ModelRc::from(console_rows.clone()));
     let glue = Rc::new(RefCell::new(Glue {
         window: window.as_weak(),
         model: AppModel::new(),
@@ -887,6 +1139,22 @@ pub fn start(window: &MainWindow) -> Rc<RefCell<GlueHandle>> {
         last_task: None,
         done_seen: 0,
         auto_shown: (Vec::new(), Vec::new(), Vec::new()),
+        console: {
+            let mut c = Console::new();
+            c.load();
+            c
+        },
+        console_rows: console_rows.clone(),
+        console_shown: Vec::new(),
+        console_rev: None,
+        console_built: None,
+        console_cols: 60,
+        console_tabs_shown: Vec::new(),
+        console_quick_shown: Vec::new(),
+        console_cands_shown: Vec::new(),
+        shell_reqs: Vec::new(),
+        sync_deadline: None,
+        persist_at: None,
     }));
     {
         let g = glue.clone();
@@ -987,6 +1255,82 @@ pub fn start(window: &MainWindow) -> Rc<RefCell<GlueHandle>> {
             g.auto_pose_confirm();
             g.render_maps(false);
         });
+        let cs = window.global::<ConsoleState>();
+        let g = glue.clone();
+        cs.on_key(move |c| g.borrow_mut().console_do(|k| k.key(&c)));
+        let g = glue.clone();
+        cs.on_select_tab(move |i| {
+            let mut g = g.borrow_mut();
+            g.console.set_active(usize::try_from(i).unwrap_or(0));
+            g.refresh_console();
+        });
+        let g = glue.clone();
+        cs.on_swipe(move |d| {
+            let mut g = g.borrow_mut();
+            g.console.step_active(d);
+            g.refresh_console();
+        });
+        let g = glue.clone();
+        cs.on_new_tab(move || {
+            let mut g = g.borrow_mut();
+            g.console.begin_new_tab();
+            g.refresh_console();
+        });
+        let g = glue.clone();
+        cs.on_rename_tab(move |i| {
+            let mut g = g.borrow_mut();
+            g.console.begin_rename(usize::try_from(i).unwrap_or(0));
+            g.refresh_console();
+        });
+        let g = glue.clone();
+        cs.on_close_tab(move |i| {
+            g.borrow_mut().console_do(|k| k.close_tab(usize::try_from(i).unwrap_or(0)).into_iter().collect());
+        });
+        let g = glue.clone();
+        cs.on_pick_candidate(move |i| {
+            let mut g = g.borrow_mut();
+            g.console.pick_candidate(usize::try_from(i).unwrap_or(usize::MAX));
+            g.refresh_console();
+        });
+        let g = glue.clone();
+        cs.on_quick_insert(move |i| {
+            let mut g = g.borrow_mut();
+            if let Some(t) = usize::try_from(i).ok().and_then(|i| g.console.quick_commands().get(i).cloned()) {
+                g.console.insert_text(&t);
+            }
+            g.refresh_console();
+        });
+        let g = glue.clone();
+        cs.on_quick_add(move || {
+            let mut g = g.borrow_mut();
+            g.console.add_quick_from_line();
+            g.refresh_console();
+        });
+        let g = glue.clone();
+        cs.on_quick_remove(move |i| {
+            let mut g = g.borrow_mut();
+            g.console.remove_quick(usize::try_from(i).unwrap_or(usize::MAX));
+            g.refresh_console();
+        });
+        let g = glue.clone();
+        cs.on_fold(move |b| {
+            let mut g = g.borrow_mut();
+            g.console.toggle_fold(usize::try_from(b).unwrap_or(usize::MAX));
+            g.console_rev = None;
+            g.refresh_console();
+        });
+        let g = glue.clone();
+        cs.on_output_width(move |w| {
+            let mut g = g.borrow_mut();
+            let cols = (((w - 10.0) / CELL_PX) as usize).max(8);
+            if cols != g.console_cols {
+                g.console_cols = cols;
+                g.console_rev = None;
+                g.refresh_console();
+            }
+        });
+        let g = glue.clone();
+        cs.on_set_level(move |i| g.borrow_mut().console_set_level(i));
         let g = glue.clone();
         window.on_stop_pressed(move || {
             let mut g = g.borrow_mut();

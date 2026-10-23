@@ -1,5 +1,6 @@
 import { Theme } from "theme.slint";
 import { MapPane } from "map.slint";
+import { ConsolePanel } from "console.slint";
 
 export struct WheelInfo { text: string, ok: bool }
 
@@ -20,6 +21,8 @@ export component OutputPage inherits Rectangle {
     in property <string> mode-text;
     in property <color> mode-color: Theme.dim;
     in property <string> reason-text;
+    // Window height; the keyboard takes about 40% of it.
+    in property <length> window-height: 640px;
 
     in property <image> map-image;
     in property <float> map-cx;
@@ -77,13 +80,12 @@ export component OutputPage inherits Rectangle {
                 zoomed(f, x, y) => { root.map-zoomed(f, x, y); }
                 fit-pressed => { root.map-fit(); }
             }
-            // Console goes here (Task 15): the right 45%.
-            Rectangle {
+            ConsolePanel {
                 x: parent.width * 0.55;
                 y: 0;
                 width: parent.width * 0.45;
                 height: parent.height;
-                background: Theme.panel;
+                kbd-height: max(root.window-height * 0.4, 240px);
             }
         }
     }

@@ -1,4 +1,5 @@
 pub mod auto;
+pub mod console;
 pub mod font;
 pub mod glue;
 pub mod manual;

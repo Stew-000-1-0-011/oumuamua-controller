@@ -5,8 +5,9 @@ import { ConnectScreen, Beacon } from "connect.slint";
 import { OutputPage, WheelInfo } from "output.slint";
 import { ManualPage, PresetInfo } from "manual.slint";
 import { AutoPage } from "auto.slint";
+import { ConsoleState, ConsoleRow, ConsoleSpan, ConsoleTabInfo } from "console.slint";
 
-export { Beacon, WheelInfo, PresetInfo }
+export { Beacon, WheelInfo, PresetInfo, ConsoleState, ConsoleRow, ConsoleSpan, ConsoleTabInfo }
 
 // Properties are set by glue.rs; later tasks add more but keep these stable.
 export component MainWindow inherits Window {
@@ -153,6 +154,7 @@ export component MainWindow inherits Window {
                     mode-text: root.band-mode;
                     mode-color: root.band-mode-color;
                     reason-text: root.band-reason;
+                    window-height: root.height;
                     map-image: root.map-image;
                     map-cx: root.map-cx;
                     map-cy: root.map-cy;

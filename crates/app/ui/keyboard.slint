@@ -1,0 +1,148 @@
+import { Theme } from "theme.slint";
+
+// One key. `cap` is the name given to Console::key. Keys that `repeat` fire on press, then
+// after a hold repeat every 50 ms.
+component Key inherits Rectangle {
+    in property <string> cap;
+    in property <string> label: cap;
+    in property <float> weight: 1;
+    in property <bool> repeat: false;
+    // 0 normal, 1 armed for one key, 2 locked.
+    in property <int> state: 0;
+    in property <length> font: 18px;
+    callback fire(string);
+
+    property <bool> repeating: false;
+
+    horizontal-stretch: root.weight * 100;
+    min-height: 28px;
+    border-radius: 5px;
+    border-width: root.state == 1 ? 2px : 0px;
+    border-color: Theme.accent;
+    background: root.state == 2 ? Theme.accent : ta.pressed ? Theme.accent : Theme.panel-hi;
+
+    Text {
+        text: root.label;
+        color: Theme.text;
+        font-size: root.font;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+    ta := TouchArea {
+        clicked => { if !root.repeat { root.fire(root.cap); } }
+        changed pressed => {
+            if self.pressed && root.repeat { root.fire(root.cap); }
+            if !self.pressed { root.repeating = false; }
+        }
+    }
+    // First repeat after 400 ms of holding, then every 50 ms.
+    Timer {
+        interval: 400ms;
+        running: ta.pressed && root.repeat && !root.repeating;
+        triggered => { root.repeating = true; root.fire(root.cap); }
+    }
+    Timer {
+        interval: 50ms;
+        running: ta.pressed && root.repeat && root.repeating;
+        triggered => { root.fire(root.cap); }
+    }
+}
+
+component Gap inherits Rectangle {
+    in property <float> weight: 0.5;
+    horizontal-stretch: root.weight * 100;
+}
+
+// The on-screen keyboard (spec section 8). It never raises the OS keyboard.
+export component Keyboard inherits Rectangle {
+    in property <bool> sym: false;
+    in property <int> ctrl: 0;
+    in property <int> alt: 0;
+    in property <int> shift: 0;
+    callback key(string);
+
+    background: #0e1217;
+
+    VerticalLayout {
+        padding: 4px;
+        spacing: 3px;
+        HorizontalLayout {
+            spacing: 3px;
+            Key { cap: "Esc"; font: 14px; fire(c) => { root.key(c); } }
+            Key { cap: "Tab"; font: 14px; fire(c) => { root.key(c); } }
+            Key { cap: "Ctrl"; font: 14px; state: root.ctrl; fire(c) => { root.key(c); } }
+            Key { cap: "Alt"; font: 14px; state: root.alt; fire(c) => { root.key(c); } }
+            Key { cap: "Left"; label: "←"; repeat: true; fire(c) => { root.key(c); } }
+            Key { cap: "Up"; label: "↑"; repeat: true; fire(c) => { root.key(c); } }
+            Key { cap: "Down"; label: "↓"; repeat: true; fire(c) => { root.key(c); } }
+            Key { cap: "Right"; label: "→"; repeat: true; fire(c) => { root.key(c); } }
+            Key { cap: "|"; fire(c) => { root.key(c); } }
+            Key { cap: "~"; fire(c) => { root.key(c); } }
+            Key { cap: "-"; fire(c) => { root.key(c); } }
+            Key { cap: "/"; fire(c) => { root.key(c); } }
+        }
+        if !root.sym: HorizontalLayout {
+            spacing: 3px;
+            for k in ["1", "2", "3", "4", "5", "6", "7", "8", "9", "0"]: Key {
+                cap: k;
+                label: root.shift != 0 ? (k == "1" ? "!" : k == "2" ? "@" : k == "3" ? "#" : k == "4" ? "$" : k == "5" ? "%" : k == "6" ? "^" : k == "7" ? "&" : k == "8" ? "*" : k == "9" ? "(" : ")") : k;
+                fire(c) => { root.key(c); }
+            }
+        }
+        if !root.sym: HorizontalLayout {
+            spacing: 3px;
+            for k in ["q", "w", "e", "r", "t", "y", "u", "i", "o", "p"]: Key {
+                cap: k;
+                label: root.shift != 0 ? k.to-uppercase() : k;
+                fire(c) => { root.key(c); }
+            }
+        }
+        if !root.sym: HorizontalLayout {
+            spacing: 3px;
+            Gap { }
+            for k in ["a", "s", "d", "f", "g", "h", "j", "k", "l"]: Key {
+                cap: k;
+                label: root.shift != 0 ? k.to-uppercase() : k;
+                fire(c) => { root.key(c); }
+            }
+            Gap { }
+        }
+        if !root.sym: HorizontalLayout {
+            spacing: 3px;
+            Key { cap: "Shift"; label: "⇧"; weight: 1.5; state: root.shift; fire(c) => { root.key(c); } }
+            for k in ["z", "x", "c", "v", "b", "n", "m"]: Key {
+                cap: k;
+                label: root.shift != 0 ? k.to-uppercase() : k;
+                fire(c) => { root.key(c); }
+            }
+            Key { cap: "Backspace"; label: "BS"; font: 14px; weight: 1.5; repeat: true; fire(c) => { root.key(c); } }
+        }
+        if root.sym: HorizontalLayout {
+            spacing: 3px;
+            for k in ["!", "@", "#", "$", "%", "^", "&", "*", "(", ")"]: Key { cap: k; fire(c) => { root.key(c); } }
+        }
+        if root.sym: HorizontalLayout {
+            spacing: 3px;
+            for k in ["`", "=", "_", "+", "[", "]", "{", "}", "\\", ";"]: Key { cap: k; fire(c) => { root.key(c); } }
+        }
+        if root.sym: HorizontalLayout {
+            spacing: 3px;
+            for k in ["'", "\"", ":", "<", ">", "?", ",", ".", "Home", "End"]: Key { cap: k; font: k.character-count > 1 ? 13px : 18px; fire(c) => { root.key(c); } }
+        }
+        if root.sym: HorizontalLayout {
+            spacing: 3px;
+            Key { cap: "Shift"; label: "⇧"; weight: 1.5; state: root.shift; fire(c) => { root.key(c); } }
+            Key { cap: "Delete"; label: "Del"; font: 14px; weight: 2; fire(c) => { root.key(c); } }
+            Gap { weight: 4; }
+            Key { cap: "Backspace"; label: "BS"; font: 14px; weight: 1.5; repeat: true; fire(c) => { root.key(c); } }
+        }
+        HorizontalLayout {
+            spacing: 3px;
+            Key { cap: "Sym"; label: root.sym ? "ABC" : "#+="; font: 14px; weight: 1.5; state: root.sym ? 2 : 0; fire(c) => { root.key(c); } }
+            Key { cap: ","; fire(c) => { root.key(c); } }
+            Key { cap: " "; label: "space"; font: 14px; weight: 4.5; fire(c) => { root.key(c); } }
+            Key { cap: "."; fire(c) => { root.key(c); } }
+            Key { cap: "Enter"; label: "Enter"; font: 14px; weight: 2; fire(c) => { root.key(c); } }
+        }
+    }
+}

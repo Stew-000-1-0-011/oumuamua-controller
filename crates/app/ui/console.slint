@@ -1,0 +1,326 @@
+import { ScrollView, ListView } from "std-widgets.slint";
+import { Theme } from "theme.slint";
+import { Keyboard } from "keyboard.slint";
+
+export struct ConsoleSpan { text: string, fg: color, bg: color, has-bg: bool, bold: bool }
+export struct ConsoleRow { folded: bool, hidden: int, block: int, spans: [ConsoleSpan] }
+export struct ConsoleTabInfo { name: string, active: bool }
+
+// Everything the console shows and sends; glue.rs fills it from console.rs.
+export global ConsoleState {
+    in property <[ConsoleTabInfo]> tabs;
+    in property <[ConsoleRow]> rows;
+    in property <string> input-before;
+    in property <string> input-after;
+    in property <[string]> candidates;
+    in property <[string]> quick;
+    // The active tab is a shell (false: the ROS log tab).
+    in property <bool> is-shell: true;
+    // 0 DEBUG, 1 INFO, 2 WARN, 3 ERROR.
+    in property <int> log-level: 1;
+    in property <int> ctrl: 0;
+    in property <int> alt: 0;
+    in property <int> shift: 0;
+    in property <bool> sym: false;
+    in property <bool> prompt-active: false;
+    in property <string> prompt-title;
+    in property <string> prompt-text;
+    in property <string> prompt-error;
+    // Grows on Enter: jump to the newest line.
+    in property <int> bottom-seq: 0;
+    in-out property <bool> kbd-shown: true;
+
+    callback key(string);
+    callback select-tab(int);
+    callback swipe(int);
+    callback new-tab();
+    callback rename-tab(int);
+    callback close-tab(int);
+    callback pick-candidate(int);
+    callback quick-insert(int);
+    callback quick-add();
+    callback quick-remove(int);
+    callback fold(int);
+    callback set-level(int);
+    // Width of the output area, to wrap rows.
+    callback output-width(length);
+}
+
+// Tap = clicked, hold 0.6 s = held.
+component Chip inherits Rectangle {
+    in property <string> text;
+    in property <bool> selected: false;
+    in property <color> fg: Theme.text;
+    in property <length> font: 15px;
+    callback clicked();
+    callback held();
+    property <bool> fired: false;
+
+    min-width: 44px;
+    min-height: 40px;
+    border-radius: 6px;
+    background: root.selected ? Theme.accent : ta.pressed ? Theme.panel-hi : #262e39;
+
+    Text {
+        x: 8px;
+        width: parent.width - 16px;
+        text: root.text;
+        color: root.selected ? #ffffff : root.fg;
+        font-size: root.font;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+        overflow: elide;
+    }
+    ta := TouchArea {
+        clicked => {
+            if !root.fired { root.clicked(); }
+        }
+        changed pressed => { if self.pressed { root.fired = false; } }
+    }
+    Timer {
+        interval: 600ms;
+        running: ta.pressed && !root.fired;
+        triggered => { root.fired = true; root.held(); }
+    }
+}
+
+component RowView inherits Rectangle {
+    in property <ConsoleRow> data;
+    callback fold(int);
+    height: 20px;
+    if root.data.folded: Rectangle {
+        background: #232b36;
+        Text {
+            x: 6px;
+            text: "▶ \{root.data.hidden} 行を表示";
+            color: Theme.accent;
+            font-size: 13px;
+            vertical-alignment: center;
+        }
+        TouchArea { clicked => { root.fold(root.data.block); } }
+    }
+    if !root.data.folded: HorizontalLayout {
+        alignment: start;
+        padding-left: 4px;
+        for sp in root.data.spans: Rectangle {
+            background: sp.has-bg ? sp.bg : transparent;
+            HorizontalLayout {
+                Text {
+                    text: sp.text;
+                    color: sp.fg;
+                    font-size: 14px;
+                    font-weight: sp.bold ? 700 : 400;
+                    vertical-alignment: center;
+                    overflow: clip;
+                }
+            }
+        }
+    }
+}
+
+// The console: tabs, output, candidates, quick commands, input line and keyboard.
+export component ConsolePanel inherits Rectangle {
+    in property <length> kbd-height: 250px;
+    background: Theme.panel;
+    clip: true;
+
+    property <bool> keyboard-visible: ConsoleState.kbd-shown && (ConsoleState.is-shell || ConsoleState.prompt-active);
+    property <bool> stick: true;
+
+    VerticalLayout {
+        // Tabs. Swipe left/right on the bar to move between them.
+        Rectangle {
+            height: 46px;
+            background: #161b22;
+            HorizontalLayout {
+                padding: 3px;
+                spacing: 4px;
+                for t[i] in ConsoleState.tabs: Chip {
+                    text: t.name;
+                    selected: t.active;
+                    min-width: 72px;
+                    horizontal-stretch: 0;
+                    clicked => { ConsoleState.select-tab(i); }
+                    held => { if i > 0 { menu-tab = i; } }
+                }
+                Chip { text: "＋"; min-width: 48px; horizontal-stretch: 0; clicked => { ConsoleState.new-tab(); } }
+                Rectangle { }
+                Chip {
+                    text: root.keyboard-visible ? "キー▼" : "キー▲";
+                    min-width: 84px;
+                    horizontal-stretch: 0;
+                    clicked => { ConsoleState.kbd-shown = !ConsoleState.kbd-shown; }
+                }
+            }
+        }
+        // Output
+        Rectangle {
+            vertical-stretch: 1;
+            min-height: 40px;
+            background: #0b0e13;
+            init => { ConsoleState.output-width(self.width); }
+            changed width => { ConsoleState.output-width(self.width); }
+            lv := ListView {
+                for r in ConsoleState.rows: RowView {
+                    data: r;
+                    fold(b) => { ConsoleState.fold(b); }
+                }
+                changed content-height => {
+                    if root.stick { self.content-y = min(0px, self.visible-height - self.content-height); }
+                }
+                changed content-y => {
+                    root.stick = self.content-y <= self.visible-height - self.content-height + 6px;
+                }
+            }
+            swipe := SwipeGestureHandler {
+                handle-swipe-left: true;
+                handle-swipe-right: true;
+                swiped => {
+                    if self.current-position.x < self.pressed-position.x { ConsoleState.swipe(1); }
+                    else { ConsoleState.swipe(-1); }
+                }
+            }
+            // Enter jumps to the bottom.
+            property <int> seq: ConsoleState.bottom-seq;
+            changed seq => {
+                root.stick = true;
+                lv.content-y = min(0px, lv.visible-height - lv.content-height);
+            }
+
+            if ConsoleState.prompt-active: Rectangle {
+                background: #000000b0;
+                Rectangle {
+                    width: min(parent.width - 24px, 360px);
+                    height: 130px;
+                    background: Theme.panel-hi;
+                    border-radius: 8px;
+                    VerticalLayout {
+                        padding: 12px;
+                        spacing: 8px;
+                        Text { text: ConsoleState.prompt-title; color: Theme.text; font-size: 16px; }
+                        Rectangle {
+                            height: 40px;
+                            background: #0b0e13;
+                            border-radius: 4px;
+                            Text {
+                                x: 8px;
+                                text: ConsoleState.prompt-text + "|";
+                                color: Theme.text;
+                                font-size: 18px;
+                                vertical-alignment: center;
+                            }
+                        }
+                        Text {
+                            text: ConsoleState.prompt-error != "" ? ConsoleState.prompt-error : "Enter で決定、Esc でやめる";
+                            color: ConsoleState.prompt-error != "" ? Theme.danger : Theme.dim;
+                            font-size: 12px;
+                            wrap: word-wrap;
+                        }
+                    }
+                }
+            }
+
+            // Long-press menu of a tab.
+            if menu-tab > 0: Rectangle {
+                background: #000000b0;
+                TouchArea { clicked => { menu-tab = 0; } }
+                Rectangle {
+                    width: min(parent.width - 24px, 260px);
+                    height: 140px;
+                    background: Theme.panel-hi;
+                    border-radius: 8px;
+                    VerticalLayout {
+                        padding: 12px;
+                        spacing: 10px;
+                        Chip { text: "名前変更"; clicked => { ConsoleState.rename-tab(menu-tab); menu-tab = 0; } }
+                        Chip { text: "閉じる"; fg: Theme.danger; clicked => { ConsoleState.close-tab(menu-tab); menu-tab = 0; } }
+                    }
+                }
+            }
+        }
+        // Completion candidates
+        if ConsoleState.candidates.length > 0: Rectangle {
+            height: 44px;
+            background: #161b22;
+            Flickable {
+                content-width: cands.preferred-width;
+                cands := HorizontalLayout {
+                    padding: 3px;
+                    spacing: 4px;
+                    for c[i] in ConsoleState.candidates: Chip {
+                        text: c;
+                        min-width: 60px;
+                        clicked => { ConsoleState.pick-candidate(i); }
+                    }
+                }
+            }
+        }
+        // Quick commands: tap inserts, hold removes.
+        if ConsoleState.is-shell: Rectangle {
+            height: 44px;
+            background: #161b22;
+            Flickable {
+                content-width: quick.preferred-width;
+                quick := HorizontalLayout {
+                    padding: 3px;
+                    spacing: 4px;
+                    for q[i] in ConsoleState.quick: Chip {
+                        text: q;
+                        min-width: 56px;
+                        font: 14px;
+                        clicked => { ConsoleState.quick-insert(i); }
+                        held => { ConsoleState.quick-remove(i); }
+                    }
+                    Chip { text: "＋登録"; fg: Theme.dim; min-width: 72px; clicked => { ConsoleState.quick-add(); } }
+                }
+            }
+        }
+        // Input line (display only; the OS keyboard is never raised) or the log level
+        if ConsoleState.is-shell: Rectangle {
+            height: 44px;
+            background: #0b0e13;
+            HorizontalLayout {
+                padding-left: 8px;
+                padding-right: 8px;
+                spacing: 0px;
+                alignment: start;
+                Text { text: "$ "; color: Theme.ok; font-size: 16px; vertical-alignment: center; }
+                Text { text: ConsoleState.input-before; color: Theme.text; font-size: 16px; vertical-alignment: center; }
+                Rectangle {
+                    width: 2px;
+                    height: 22px;
+                    y: (parent.height - self.height) / 2;
+                    background: Theme.accent;
+                }
+                Text { text: ConsoleState.input-after; color: Theme.text; font-size: 16px; vertical-alignment: center; }
+            }
+            TouchArea { clicked => { ConsoleState.kbd-shown = true; } }
+        }
+        if !ConsoleState.is-shell: Rectangle {
+            height: 48px;
+            background: #161b22;
+            HorizontalLayout {
+                padding: 3px;
+                spacing: 4px;
+                Text { text: "ログの重要度"; color: Theme.dim; font-size: 14px; vertical-alignment: center; }
+                for n[i] in ["DEBUG", "INFO", "WARN", "ERROR"]: Chip {
+                    text: n;
+                    selected: ConsoleState.log-level == i;
+                    font: 14px;
+                    clicked => { ConsoleState.set-level(i); }
+                }
+            }
+        }
+        if root.keyboard-visible: Keyboard {
+            height: root.kbd-height;
+            sym: ConsoleState.sym;
+            ctrl: ConsoleState.ctrl;
+            alt: ConsoleState.alt;
+            shift: ConsoleState.shift;
+            key(c) => { ConsoleState.key(c); }
+        }
+    }
+
+    // Index of the tab whose menu is open (0 = none).
+    property <int> menu-tab: 0;
+}
