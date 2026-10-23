@@ -250,6 +250,8 @@ class Handlers:
 
     def _shell_close(self, req, m):
         ok, message = self.shells.close(m[2])
+        if ok:  # ShellManager.close does not call on_closed (only a bash exit does)
+            self.send([P.SHELL_CLOSED, m[2], "closed"])
         self._result(req, ok, message)
 
     def _shell_rename(self, req, m):
