@@ -646,8 +646,16 @@ enum TouchRoute {
     Primary,
     /// The finger's own entry in `secondary_touches`.
     Secondary,
+    /// One of the two fingers of `secondary_pinch`.
+    Pair,
     /// Dropped: the finger landed on something another finger owns.
     Ignored,
+}
+
+/// MULTITOUCH: gesture recognizer and dispatch state of a pinch between two non-primary fingers.
+struct SecondaryPinch {
+    touches: TouchState,
+    state: MouseInputState,
 }
 
 /// Inner datastructure for the [`crate::api::Window`]
@@ -660,7 +668,9 @@ pub struct WindowInner {
     touch_state: RefCell<TouchState>,
     /// MULTITOUCH: dispatch state of every additional finger that owns its own items, keyed by
     /// touch id. The primary finger (and a pinch pair) stays on `mouse_input_state`/`touch_state`.
-    secondary_touches: RefCell<Vec<(i32, MouseInputState)>>,
+    secondary_touches: RefCell<Vec<(i32, MouseInputState, LogicalPoint)>>,
+    /// MULTITOUCH: a two-finger gesture between two fingers that are not the primary finger.
+    secondary_pinch: RefCell<Option<SecondaryPinch>>,
     /// MULTITOUCH: fingers that landed on something another finger owns. They are ignored until
     /// they lift and are never handed over to.
     ignored_touches: RefCell<Vec<i32>>,
@@ -734,6 +744,7 @@ impl WindowInner {
             mouse_input_state: Default::default(),
             touch_state: Default::default(),
             secondary_touches: Default::default(),
+            secondary_pinch: Default::default(),
             ignored_touches: Default::default(),
             pinch_handler: Default::default(),
             pinned_fields: Box::pin(WindowPinnedFields {
@@ -778,6 +789,7 @@ impl WindowInner {
         self.touch_state.replace(Default::default());
         // MULTITOUCH: the old items are going away, forget the per-finger state.
         self.secondary_touches.take();
+        self.secondary_pinch.take();
         self.ignored_touches.take();
         self.pinch_handler.take();
         self.component.replace(ItemTreeRc::downgrade(component));
@@ -1248,11 +1260,24 @@ impl WindowInner {
         match self.route_touch(id, position, phase) {
             TouchRoute::Ignored => return None,
             TouchRoute::Secondary => return self.process_secondary_touch(id, position, phase),
+            TouchRoute::Pair => return self.process_pair_touch(id, position, phase),
             TouchRoute::Primary => {}
         }
         let events = self.touch_state.borrow_mut().process(id, position, phase);
         let mut aggregate: Option<MouseDispatchResult> = None;
         for event in events.into_iter() {
+            // MULTITOUCH: after a pinch the remaining finger is pressed again; refuse that if
+            // it now sits on an item another finger owns.
+            if phase == TouchPhase::Ended
+                && let MouseEvent::Pressed { position: p, touch_finger_id, .. } = &event
+                && self.repress_blocked(*p, false)
+            {
+                let rid = touch_finger_id - 1;
+                self.touch_state.borrow_mut().forget(rid);
+                self.ignored_touches.borrow_mut().push(rid);
+                self.process_mouse_input(MouseEvent::Exit);
+                continue;
+            }
             if let Some(r) = self.process_mouse_input(event) {
                 let agg = aggregate
                     .get_or_insert(MouseDispatchResult { drag_action: None, accepted: false });
@@ -1276,7 +1301,10 @@ impl WindowInner {
         if self.touch_state.borrow().tracks(id) {
             return TouchRoute::Primary;
         }
-        if self.secondary_touches.borrow().iter().any(|(sid, _)| *sid == id) {
+        if self.secondary_pinch.borrow().as_ref().is_some_and(|p| p.touches.tracks(id)) {
+            return TouchRoute::Pair;
+        }
+        if self.secondary_touches.borrow().iter().any(|(sid, _, _)| *sid == id) {
             return TouchRoute::Secondary;
         }
         {
@@ -1301,10 +1329,7 @@ impl WindowInner {
         let hit = crate::input::multitouch_hit_claims(root.clone(), position, &window_adapter);
 
         // Items owned by the other fingers that run on their own state.
-        let mut owned: Vec<ItemRc> = Vec::new();
-        for (_, state) in self.secondary_touches.borrow().iter() {
-            owned.extend(crate::input::multitouch_state_claims(state, true));
-        }
+        let mut owned = self.owned_by_others(None);
 
         // Rule 3: the second finger of a pinch (primary finger and new finger inside the same
         // ScaleRotateGestureHandler).
@@ -1322,6 +1347,40 @@ impl WindowInner {
                 }
                 *self.pinch_handler.borrow_mut() = handler.downgrade();
                 return TouchRoute::Primary;
+            }
+        }
+
+        // Rule 3, any pair: the new finger lands in a handler in which exactly one *secondary*
+        // finger is. They pinch with a recognizer of their own.
+        if self.secondary_pinch.borrow().is_none() && !hit.is_empty() {
+            let handlers: Vec<&ItemRc> =
+                hit.iter().filter(|i| crate::input::multitouch_is_gesture_handler(i)).collect();
+            let mut candidates: Vec<(i32, LogicalPoint, &ItemRc)> = Vec::new();
+            for handler in handlers {
+                for (sid, _, spos) in self.secondary_touches.borrow().iter() {
+                    let shit =
+                        crate::input::multitouch_hit_claims(root.clone(), *spos, &window_adapter);
+                    if shit.contains(handler) {
+                        candidates.push((*sid, *spos, handler));
+                    }
+                }
+            }
+            if let [(sid, spos, handler)] = candidates[..] {
+                let others = self.owned_by_others(Some(sid));
+                let handler = handler.clone();
+                if !hit.iter().any(|item| others.contains(item)) {
+                    let x = {
+                        let mut all = self.secondary_touches.borrow_mut();
+                        let idx = all.iter().position(|(i, _, _)| *i == sid).unwrap();
+                        all.swap_remove(idx)
+                    };
+                    let mut touches = TouchState::default();
+                    touches.adopt_first_finger(sid, spos);
+                    *self.pinch_handler.borrow_mut() = handler.downgrade();
+                    *self.secondary_pinch.borrow_mut() =
+                        Some(SecondaryPinch { touches, state: x.1 });
+                    return TouchRoute::Pair;
+                }
             }
         }
 
@@ -1358,7 +1417,7 @@ impl WindowInner {
             self.ignored_touches.borrow_mut().push(id);
             return TouchRoute::Ignored;
         }
-        self.secondary_touches.borrow_mut().push((id, MouseInputState::default()));
+        self.secondary_touches.borrow_mut().push((id, MouseInputState::default(), position));
         TouchRoute::Secondary
     }
 
@@ -1369,7 +1428,91 @@ impl WindowInner {
             .internal(crate::InternalToken)
             .and_then(|internal| internal.get_parent())
             .unwrap_or_else(|| window_adapter.clone());
-        !WindowInner::from_pub(parent_adapter.window()).active_popups.borrow().is_empty()
+        // Tooltips never take part in input dispatch (see `process_mouse_input`).
+        WindowInner::from_pub(parent_adapter.window())
+            .active_popups
+            .borrow()
+            .iter()
+            .any(|p| !matches!(p.window_kind, WindowKind::ToolTip))
+    }
+
+    /// Items owned by fingers that do not run on the stock path: secondary fingers (except
+    /// `except`) and a secondary pinch.
+    fn owned_by_others(&self, except: Option<i32>) -> Vec<ItemRc> {
+        let mut owned = Vec::new();
+        for (sid, state, _) in self.secondary_touches.borrow().iter() {
+            if Some(*sid) != except {
+                owned.extend(crate::input::multitouch_state_claims(state, true));
+            }
+        }
+        if let Some(pair) = self.secondary_pinch.borrow().as_ref() {
+            owned.extend(crate::input::multitouch_state_claims(&pair.state, true));
+        }
+        owned
+    }
+
+    /// Whether pressing again at `position` (the finger left over after a pinch) would take an
+    /// item another finger owns. `from_pair`: the pressing finger comes from the secondary pinch
+    /// (so the primary state counts as "another finger" too).
+    fn repress_blocked(&self, position: LogicalPoint, from_pair: bool) -> bool {
+        let Some(item_tree) = self.try_component() else { return false };
+        let window_adapter = self.window_adapter();
+        let hit = crate::input::multitouch_hit_claims(
+            ItemRc::new_root(item_tree),
+            position,
+            &window_adapter,
+        );
+        let mut owned = self.owned_by_others(None);
+        if from_pair {
+            let primary_state = self.mouse_input_state.take();
+            let touch_primary = self.touch_state.borrow().primary_is_plain_finger();
+            owned.extend(crate::input::multitouch_state_claims(&primary_state, touch_primary));
+            self.mouse_input_state.set(primary_state);
+        }
+        hit.iter().any(|item| owned.contains(item))
+    }
+
+    /// Dispatch one event of a finger of the secondary pinch.
+    fn process_pair_touch(
+        &self,
+        id: i32,
+        position: LogicalPoint,
+        phase: TouchPhase,
+    ) -> Option<MouseDispatchResult> {
+        let mut pair = self.secondary_pinch.take()?;
+        let events = pair.touches.process(id, position, phase);
+        let mut accepted = false;
+        for event in events.into_iter() {
+            if phase == TouchPhase::Ended
+                && let MouseEvent::Pressed { position: p, touch_finger_id, .. } = &event
+                && self.repress_blocked(*p, true)
+            {
+                let rid = touch_finger_id - 1;
+                pair.touches.forget(rid);
+                self.ignored_touches.borrow_mut().push(rid);
+                let (state, a) = self.dispatch_secondary_event(MouseEvent::Exit, pair.state);
+                pair.state = state;
+                accepted |= a;
+                continue;
+            }
+            let (state, a) = self.dispatch_secondary_event(event, pair.state);
+            pair.state = state;
+            accepted |= a;
+        }
+        if pair.touches.gesture_active() {
+            *self.secondary_pinch.borrow_mut() = Some(pair);
+        } else if let Some(rid) = pair.touches.plain_primary_id() {
+            // The pinch is over, the remaining finger carries on on its own state.
+            let pos = pair.touches.tracked().iter().find(|t| t.0 == rid).map(|t| t.1);
+            self.secondary_touches.borrow_mut().push((rid, pair.state, pos.unwrap_or(position)));
+        } else {
+            // Cancelled or nothing left: leftover fingers are ignored until they lift.
+            for (lid, _) in pair.touches.tracked() {
+                self.ignored_touches.borrow_mut().push(lid);
+            }
+            pair.state.multitouch_exit_all(&self.window_adapter());
+        }
+        Some(MouseDispatchResult { drag_action: None, accepted })
     }
 
     /// Dispatch one event of a secondary finger through its own `MouseInputState`.
@@ -1383,7 +1526,7 @@ impl WindowInner {
         let touch_finger_id = id + 1;
         let mut state = {
             let mut all = self.secondary_touches.borrow_mut();
-            let idx = all.iter().position(|(sid, _)| *sid == id)?;
+            let idx = all.iter().position(|(sid, _, _)| *sid == id)?;
             all.swap_remove(idx).1
         };
         let events: &[MouseEvent] = match phase {
@@ -1413,7 +1556,7 @@ impl WindowInner {
             accepted |= ev_accepted;
         }
         if matches!(phase, TouchPhase::Started | TouchPhase::Moved) {
-            self.secondary_touches.borrow_mut().push((id, state));
+            self.secondary_touches.borrow_mut().push((id, state, position));
         }
         Some(MouseDispatchResult { drag_action: None, accepted })
     }
@@ -1459,8 +1602,11 @@ impl WindowInner {
         self.ignored_touches.borrow_mut().clear();
         let secondaries = self.secondary_touches.take();
         let window_adapter = self.window_adapter();
-        for (_, state) in secondaries {
+        for (_, state, _) in secondaries {
             state.multitouch_exit_all(&window_adapter);
+        }
+        if let Some(pair) = self.secondary_pinch.take() {
+            pair.state.multitouch_exit_all(&window_adapter);
         }
     }
 
@@ -1469,13 +1615,13 @@ impl WindowInner {
         let secondary = {
             let mut all = self.secondary_touches.borrow_mut();
             all.iter()
-                .position(|(sid, _)| *sid + 1 == touch_finger_id)
+                .position(|(sid, _, _)| *sid + 1 == touch_finger_id)
                 .map(|idx| all.swap_remove(idx))
         };
         match secondary {
-            Some((sid, state)) => {
+            Some((sid, state, pos)) => {
                 let state = crate::input::process_delayed_event(&self.window_adapter(), state);
-                self.secondary_touches.borrow_mut().push((sid, state));
+                self.secondary_touches.borrow_mut().push((sid, state, pos));
             }
             None => self.process_delayed_event(),
         }

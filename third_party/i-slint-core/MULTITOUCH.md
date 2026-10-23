@@ -72,11 +72,30 @@ lifts. A single finger behaves exactly as before.
   (or always, for a touch finger, where hover == pressed).
 - `MouseInputState::multitouch_exit_all`: Exit to a stack's items (window hide).
 
+### Fix round 1 additions
+
+- Pinch between any two fingers (rule 3): when the new finger lands in a
+  ScaleRotateGestureHandler in which exactly one *secondary* finger is (and the primary is not),
+  that finger leaves `secondary_touches` and both go to `secondary_pinch` (a `SecondaryPinch`:
+  its own `TouchState` for geometry/thresholds plus the `MouseInputState` of the old finger).
+  Events go through `process_pair_touch` / `TouchRoute::Pair`; the old finger gets the stock
+  Released, then Pinch/Rotation events as for the primary. When one finger lifts the other
+  continues as a secondary finger (stock "remaining finger continues"); on Cancelled leftover
+  fingers are ignored. Only one such pair at a time; a third finger in the handler is ignored.
+- Pinch-end re-press is overlap-checked (`repress_blocked`) both on the stock path
+  (`process_touch_input`) and for the pair: if the remaining finger now sits on an item another
+  finger owns, an Exit is sent, the finger is forgotten (`TouchState::forget`) and ignored until
+  it lifts.
+- `any_popup_open` ignores ToolTip popups like the stock dispatch.
+- `TouchState` helpers added: `plain_primary_id`, `gesture_active`, `tracked`, `forget`,
+  `adopt_first_finger`.
+
 ### Known limits
+
+- Secondary fingers get no click counting (`ClickState` is primary-only): double-click style
+  callbacks are not produced for them; `click_count` is always 0.
 
 - Touch/mouse: a mouse press while a touch is already the primary shares the primary state (no
   overlap check in that direction; touch arriving while a mouse button is held is handled).
-- A finger that lifts out of a pinch re-presses the remaining finger as primary as before; it is
-  not overlap-checked against secondaries.
 - Hit test is structural; an item that ignores presses at runtime although of a handler type
   (e.g. TextInput that is read-only) still counts as owning the point.

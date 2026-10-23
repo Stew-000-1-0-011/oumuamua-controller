@@ -490,3 +490,120 @@ fn held_mouse_button_owns_its_area_against_touch() {
     });
     assert!(!ui.get_left_pressed());
 }
+
+// ---- fix round 1 --------------------------------------------------------------------------
+
+#[test]
+fn pinch_by_two_secondary_fingers_while_primary_holds_an_area() {
+    let ui = setup();
+    let w = ui.window();
+    touch(w, 0, 10., 10., Started); // primary holds left
+    touch(w, 1, 320., 200., Started); // secondary inside the handler
+    touch(w, 2, 360., 200., Started); // second finger in the handler -> pinch
+    touch(w, 1, 310., 200., Moved);
+    touch(w, 2, 380., 200., Moved);
+    assert!(
+        ui.get_pinch_active(),
+        "two fingers in one handler must pinch"
+    );
+    assert!(ui.get_pinch_scale() > 1.0);
+    assert!(ui.get_left_pressed(), "primary keeps its area");
+    touch(w, 0, 40., 10., Moved);
+    assert_eq!(ui.get_left_x(), 40.);
+    // one pinch finger lifts: the pinch ends, the other carries on
+    touch(w, 1, 310., 200., Ended);
+    assert!(!ui.get_pinch_active());
+    touch(w, 2, 380., 200., Ended);
+    assert!(ui.get_left_pressed());
+    touch(w, 0, 40., 10., Ended);
+    assert!(!ui.get_left_pressed());
+}
+
+#[test]
+fn pinch_by_secondary_pair_other_finger_order_and_second_secondary() {
+    let ui = setup();
+    let w = ui.window();
+    touch(w, 5, 320., 200., Started); // first finger is in the handler (primary)
+    touch(w, 0, 10., 10., Started); // secondary on left
+    touch(w, 1, 210., 10., Started); // secondary on right
+    // primary lifts; a new finger in the handler becomes primary again, the next one pinches
+    touch(w, 5, 320., 200., Ended);
+    touch(w, 2, 320., 200., Started);
+    touch(w, 3, 360., 200., Started);
+    touch(w, 2, 300., 200., Moved);
+    touch(w, 3, 390., 200., Moved);
+    assert!(ui.get_pinch_active());
+    assert!(ui.get_left_pressed() && ui.get_right_pressed());
+    // here the pair is the (re-taken) primary and a new finger; one of them lifts
+    touch(w, 3, 390., 200., Ended);
+    assert!(!ui.get_pinch_active());
+    touch(w, 2, 300., 200., Ended);
+    touch(w, 0, 10., 10., Ended);
+    touch(w, 1, 210., 10., Ended);
+    assert!(!ui.get_left_pressed() && !ui.get_right_pressed());
+}
+
+#[test]
+fn pinch_end_repress_onto_item_of_another_finger_is_refused() {
+    let ui = setup();
+    let w = ui.window();
+    touch(w, 2, 10., 10., Started); // primary holds left
+    touch(w, 0, 320., 200., Started); // secondary in the handler
+    touch(w, 1, 360., 200., Started); // pair
+    touch(w, 0, 310., 200., Moved);
+    touch(w, 1, 50., 50., Moved); // finger 1 wanders onto the left area
+    assert!(ui.get_pinch_active());
+    touch(w, 0, 310., 200., Ended); // pinch ends, finger 1 would be pressed on left
+    assert!(ui.get_left_pressed(), "left still owned by finger 2");
+    touch(w, 1, 70., 70., Moved);
+    assert_eq!(
+        ui.get_left_x(),
+        10.,
+        "refused finger must not move the area"
+    );
+    touch(w, 1, 70., 70., Ended);
+    assert!(
+        ui.get_left_pressed(),
+        "refused finger must not release it either"
+    );
+    touch(w, 2, 20., 10., Moved);
+    assert_eq!(ui.get_left_x(), 20.);
+    touch(w, 2, 20., 10., Ended);
+    assert!(!ui.get_left_pressed());
+}
+
+#[test]
+fn stock_pinch_end_repress_onto_item_of_secondary_is_refused() {
+    let ui = setup();
+    let w = ui.window();
+    touch(w, 0, 320., 200., Started); // primary in handler
+    touch(w, 1, 10., 10., Started); // secondary holds left
+    touch(w, 2, 360., 200., Started); // pinch with the primary
+    touch(w, 0, 310., 200., Moved);
+    touch(w, 2, 50., 50., Moved);
+    assert!(ui.get_pinch_active());
+    touch(w, 0, 310., 200., Ended);
+    touch(w, 2, 70., 70., Moved);
+    assert_eq!(ui.get_left_x(), 10.);
+    touch(w, 2, 70., 70., Ended);
+    assert!(ui.get_left_pressed());
+    touch(w, 1, 10., 10., Ended);
+    assert!(!ui.get_left_pressed());
+}
+
+#[test]
+fn second_finger_while_first_flickable_press_is_pending() {
+    let ui = setup();
+    let w = ui.window();
+    touch(w, 0, 10., 160., Started); // press delayed by the Flickable
+    assert!(!ui.get_button_pressed());
+    touch(w, 1, 150., 200., Started); // empty part of the same Flickable: ignored
+    touch(w, 1, 150., 100., Moved);
+    assert_eq!(ui.get_flick_y(), 0.);
+    elapse();
+    assert!(ui.get_button_pressed());
+    assert_eq!(ui.get_flick_y(), 0.);
+    touch(w, 1, 150., 100., Ended);
+    touch(w, 0, 10., 160., Ended);
+    assert!(!ui.get_button_pressed());
+}

@@ -2236,6 +2236,41 @@ impl TouchState {
         }
     }
 
+    /// The id of the primary finger while it acts as a plain finger (see `lone_primary_position`).
+    pub(crate) fn plain_primary_id(&self) -> Option<i32> {
+        if matches!(self.gesture_state, GestureRecognitionState::Idle) {
+            self.primary_touch_id
+        } else {
+            None
+        }
+    }
+
+    /// Whether a two-finger gesture (pending or running) is in progress.
+    pub(crate) fn gesture_active(&self) -> bool {
+        self.gesture_finger_ids().is_some()
+    }
+
+    /// Ids and positions of all tracked fingers.
+    pub(crate) fn tracked(&self) -> Vec<(i32, LogicalPoint)> {
+        self.active_touches.entries[..self.active_touches.len]
+            .iter()
+            .map(|tp| (tp.id, tp.position))
+            .collect()
+    }
+
+    /// Stop tracking `id` (its re-press was refused because another finger owns the item).
+    pub(crate) fn forget(&mut self, id: i32) {
+        self.active_touches.remove(id);
+        if self.primary_touch_id == Some(id) {
+            self.primary_touch_id = None;
+        }
+    }
+
+    /// Start tracking `id` as if it had been the first finger, without producing events.
+    pub(crate) fn adopt_first_finger(&mut self, id: i32, position: LogicalPoint) {
+        let _ = self.process(id, position, TouchPhase::Started);
+    }
+
     /// True while the primary finger is acting as a plain mouse (no two-finger gesture).
     pub(crate) fn primary_is_plain_finger(&self) -> bool {
         self.primary_touch_id.is_some() && matches!(self.gesture_state, GestureRecognitionState::Idle)
