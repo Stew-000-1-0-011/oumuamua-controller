@@ -1595,17 +1595,27 @@ mod tests {
         assert!(win.get_auto_confirm_active(), "the confirmation is shown");
         let (px, py, _) = glue.borrow().pending_pose.expect("a picked pose");
         assert_eq!(glue.borrow().auto_reqs.len(), 0, "nothing is sent before 決定");
-        // 決定
+        // 決定. Request ids are handed out in order, so the ids before and after count the sends.
+        let first_id = glue.borrow().client.as_ref().expect("client").next_req();
         touch(win.window(), 100., 108., Started);
         touch(win.window(), 100., 108., Ended);
-        assert_eq!(glue.borrow().auto_reqs.len(), 1, "exactly one SET_POSE");
         assert!(!win.get_pose_pick() && !win.get_auto_confirm_active());
+        // Wait (bounded) for the RESULT of the SET_POSE: it removes the entry from auto_reqs,
+        // so the entry may already be gone by the time we look; only the ids tell the sends.
+        let t1 = Instant::now();
+        while !glue.borrow().auto_reqs.is_empty() {
+            assert!(t1.elapsed() < Duration::from_secs(10), "no RESULT for the SET_POSE");
+            pump(50);
+            std::thread::sleep(Duration::from_millis(20));
+        }
         // A second tap where 決定 was now lands on the map and sends nothing.
         touch(win.window(), 100., 108., Started);
         touch(win.window(), 100., 108., Ended);
         pump(50);
-        // (The demo may already have answered the first one, so only "not more" can be checked.)
-        assert!(glue.borrow().auto_reqs.len() <= 1);
+        assert!(glue.borrow().auto_reqs.is_empty(), "the second tap sent nothing");
+        let next_id = glue.borrow().client.as_ref().expect("client").next_req();
+        assert_eq!(next_id - first_id, 2, "exactly one SET_POSE sent (ids {first_id}..{next_id})");
+        assert!(glue.borrow().auto_message.1, "acknowledged: {:?}", glue.borrow().auto_message);
         // The demo robot took the pose.
         let t0 = Instant::now();
         loop {
