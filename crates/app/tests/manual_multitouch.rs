@@ -1,0 +1,70 @@
+//! Two fingers on the real ManualPage: the stick and the rotation slider are separate
+//! TouchAreas and drive the Manual state at the same time.
+
+use std::cell::RefCell;
+use std::rc::Rc;
+
+use app::manual::{DEFAULT_LEVELS, Manual};
+use i_slint_core::input::TouchPhase::{self, Ended, Moved, Started};
+use i_slint_core::lengths::LogicalPoint;
+use i_slint_core::platform::{InternalEvent, WindowEvent};
+use link::ControlInput;
+use slint::ComponentHandle;
+
+slint::slint! {
+    import { ManualPage } from "../ui/manual.slint";
+    export component Host inherits Window {
+        width: 1000px;
+        height: 500px;
+        callback stick(float, float);
+        callback slider(float);
+        ManualPage {
+            stick-moved(x, y) => { root.stick(x, y); }
+            slider-moved(s) => { root.slider(s); }
+        }
+    }
+}
+
+fn touch(w: &slint::Window, id: i32, x: f32, y: f32, phase: TouchPhase) {
+    w.dispatch_event(WindowEvent::internal(InternalEvent::Touch { id, position: LogicalPoint::new(x, y), phase }));
+}
+
+#[test]
+fn stick_and_slider_drive_manual_at_once() {
+    i_slint_backend_testing::init_no_event_loop();
+    let host = Host::new().unwrap();
+    let manual = Rc::new(RefCell::new(Manual::default()));
+    let m = manual.clone();
+    host.on_stick(move |x, y| m.borrow_mut().set_stick(x, y));
+    let m = manual.clone();
+    host.on_slider(move |s| m.borrow_mut().set_slider(s));
+    host.show().unwrap();
+    let w = host.window();
+    let read = || {
+        let mut c = ControlInput::default();
+        manual.borrow().apply(&mut c, &DEFAULT_LEVELS, true);
+        c
+    };
+
+    // Finger 0 on the stick (well above its centre), finger 1 on the slider (right of its centre).
+    touch(w, 0, 130., 60., Started);
+    touch(w, 1, 800., 250., Started);
+    let c = read();
+    assert!(c.vx > 0.0, "stick drives vx: {c:?}");
+    assert!(c.wz < 0.0, "slider drives wz at the same time: {c:?}");
+
+    // Moving one finger leaves the other control alone.
+    touch(w, 1, 760., 250., Moved);
+    let c = read();
+    assert!(c.vx > 0.0 && c.wz < 0.0, "{c:?}");
+
+    // Lifting finger 0 zeroes only the stick.
+    touch(w, 0, 130., 60., Ended);
+    let c = read();
+    assert_eq!((c.vx, c.vy), (0.0, 0.0));
+    assert!(c.wz < 0.0, "slider still held by finger 1: {c:?}");
+
+    touch(w, 1, 760., 250., Ended);
+    let c = read();
+    assert_eq!((c.vx, c.vy, c.wz), (0.0, 0.0, 0.0));
+}

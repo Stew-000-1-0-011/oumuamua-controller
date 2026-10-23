@@ -24,6 +24,8 @@ slint-build = "=1.18.1"
 
 [dev-dependencies]
 tempfile = "3"
+i-slint-backend-testing = "=1.18.1"
+i-slint-core = "=1.18.1"
 
 [package.metadata.android]
 package = "dev.oumuamua.controller"
