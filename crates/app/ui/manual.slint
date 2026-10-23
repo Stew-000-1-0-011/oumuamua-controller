@@ -34,8 +34,8 @@ component JogButton inherits Rectangle {
     in property <bool> enabled: true;
     callback pressed();
     callback released();
-    min-height: Theme.tap;
-    min-width: Theme.tap;
+    min-height: Theme.tap - 4px;
+    min-width: Theme.tap - 4px;
     border-radius: 8px;
     background: !root.enabled ? Theme.panel : ta.pressed ? Theme.accent : Theme.panel-hi;
     Text {
@@ -66,7 +66,7 @@ component Stick inherits Rectangle {
     in property <bool> enabled: true;
     callback moved(float, float);
     property <length> d: Math.min(self.width, self.height);
-    property <length> knob: 72px;
+    property <length> knob: 60px;
     property <length> reach: (root.d - root.knob) / 2;
     property <float> kx: 0;
     property <float> ky: 0;
@@ -81,9 +81,10 @@ component Stick inherits Rectangle {
         x: (parent.width - self.width) / 2;
         y: (parent.height - self.height) / 2;
         border-radius: self.width / 2;
-        background: Theme.panel;
+        background: Theme.plate;
         border-width: 2px;
         border-color: Theme.panel-hi;
+        Text { y: parent.height - 30px; text: "並進"; color: Theme.dim; font-size: 14px; width: parent.width; horizontal-alignment: center; }
         Rectangle {
             width: root.knob;
             height: root.knob;
@@ -120,7 +121,7 @@ component Stick inherits Rectangle {
 component Slider inherits Rectangle {
     in property <bool> enabled: true;
     callback moved(float);
-    property <length> knob: 64px;
+    property <length> knob: 56px;
     property <length> reach: (self.width - root.knob) / 2;
     property <float> k: 0;
     pure function clamp1(v: float) -> float { return Math.max(-1, Math.min(1, v)); }
@@ -130,7 +131,7 @@ component Slider inherits Rectangle {
         height: root.knob;
         y: (parent.height - self.height) / 2;
         border-radius: root.knob / 2;
-        background: Theme.panel;
+        background: Theme.plate;
         border-width: 2px;
         border-color: Theme.panel-hi;
         Rectangle { width: 2px; height: parent.height * 0.5; x: parent.width / 2; y: parent.height * 0.25; background: Theme.dim; }
@@ -162,8 +163,16 @@ component Slider inherits Rectangle {
     }
 }
 
+// A semi-transparent plate behind a group of controls, so the map shows through around them.
+component Plate inherits Rectangle {
+    background: Theme.plate;
+    border-radius: 10px;
+    border-width: 1px;
+    border-color: Theme.panel-hi;
+}
+
 // One lift + suction column. `side` 0 is left, 1 is right.
-component LiftColumn inherits Rectangle {
+component LiftColumn inherits Plate {
     in property <string> title;
     in property <string> info;
     in property <int> side;
@@ -176,43 +185,47 @@ component LiftColumn inherits Rectangle {
     callback preset(int);
     callback suction-toggled();
 
-    background: Theme.panel;
-    border-radius: 8px;
     VerticalLayout {
-        padding: 6px;
-        spacing: 4px;
+        padding: 4px;
+        spacing: 3px;
         HorizontalLayout {
+            height: 16px;
             spacing: 6px;
-            Text { text: root.title; color: Theme.text; font-size: Theme.font; font-weight: 700; vertical-alignment: center; }
-            Text { text: root.info; color: Theme.dim; font-size: 13px; vertical-alignment: center; overflow: elide; }
+            Text { text: root.title; color: Theme.text; font-size: 14px; font-weight: 700; vertical-alignment: center; }
+            Text { text: root.info; color: Theme.dim; font-size: 12px; vertical-alignment: center; overflow: elide; }
         }
         HorizontalLayout {
-            spacing: 6px;
+            height: 44px;
+            spacing: 4px;
             JogButton { label: "上"; enabled: !root.stopped; pressed => { root.jog-pressed(1); } released => { root.jog-released(root.side); } }
             JogButton { label: "下"; enabled: !root.stopped; pressed => { root.jog-pressed(-1); } released => { root.jog-released(root.side); } }
+            Btn {
+                label: root.suction ? "吸引 入" : "吸引 切";
+                active: root.suction;
+                tint: Theme.ok;
+                font: 14px;
+                min-width: 80px;
+                enabled: !root.stopped || root.suction;
+                clicked => { root.suction-toggled(); }
+            }
         }
         HorizontalLayout {
+            height: 44px;
             spacing: 4px;
             for p[i] in root.presets: Btn {
                 label: p.name;
                 enabled: p.enabled && !root.stopped;
-                font: 14px;
+                font: 13px;
                 min-width: 44px;
                 clicked => { root.preset(i); }
             }
         }
-        Btn {
-            label: root.suction ? "吸引 入" : "吸引 切";
-            active: root.suction;
-            tint: Theme.ok;
-            enabled: !root.stopped || root.suction;
-            clicked => { root.suction-toggled(); }
-        }
     }
 }
 
+// Drawn over the output screen: no background of its own, only plates around the controls.
 export component ManualPanel inherits Rectangle {
-    background: Theme.bg;
+    background: transparent;
     // 0 低, 1 中, 2 高
     in-out property <int> level: 0;
     in-out property <bool> field-frame: false;
@@ -254,114 +267,140 @@ export component ManualPanel inherits Rectangle {
         }
     }
 
-    HorizontalLayout {
-        padding: 8px;
-        spacing: 8px;
-        VerticalLayout {
-            width: parent.width * 0.26;
-            Text { text: "並進"; color: Theme.dim; font-size: 14px; horizontal-alignment: center; }
-            Stick {
-                // Hidden (another page showing) counts as disabled: the panel stays alive, so a
-                // held finger must be let go of.
-                enabled: !root.auto-active && root.visible;
-                moved(x, y) => { root.stick-moved(x, y); }
-            }
-        }
-        VerticalLayout {
-            spacing: 6px;
-            alignment: start;
-            HorizontalLayout {
-                spacing: 6px;
-                height: Theme.tap;
-                Btn { label: "低"; active: root.level == 0; clicked => { root.level = 0; } }
-                Btn { label: "中"; active: root.level == 1; clicked => { root.level = 1; } }
-                Btn { label: "高"; active: root.level == 2; clicked => { root.level = 2; } }
-                Btn { label: "ロボット"; active: !root.field-frame; font: 14px; clicked => { root.field-frame = false; } }
-                Btn { label: "フィールド"; active: root.field-frame; font: 14px; clicked => { root.field-frame = true; } }
-            }
-            Text { text: root.speed-text; color: Theme.dim; font-size: 13px; horizontal-alignment: center; }
-            HorizontalLayout {
-                spacing: 6px;
-                LiftColumn {
-                    title: "左";
-                    side: 0;
-                    info: root.left-info;
-                    presets: root.presets;
-                    suction: root.left-suction;
-                    stopped: root.stopped || !root.visible;
-                    jog-pressed(d) => { root.jog-pressed(0, d); }
-                    jog-released(s) => { root.jog-released(s); }
-                    preset(i) => { root.preset-pressed(0, i); }
-                    suction-toggled => { root.suction-toggled(0); }
-                }
-                LiftColumn {
-                    title: "右";
-                    side: 1;
-                    info: root.right-info;
-                    presets: root.presets;
-                    suction: root.right-suction;
-                    stopped: root.stopped || !root.visible;
-                    jog-pressed(d) => { root.jog-pressed(1, d); }
-                    jog-released(s) => { root.jog-released(s); }
-                    preset(i) => { root.preset-pressed(1, i); }
-                    suction-toggled => { root.suction-toggled(1); }
-                }
-            }
-            Text {
-                text: root.lift-reason;
-                color: Theme.warn;
-                font-size: 13px;
-                horizontal-alignment: center;
-                visible: root.lift-reason != "";
-            }
-            HorizontalLayout {
-                spacing: 6px;
-                height: Theme.tap;
-                Btn { label: "両方"; active: root.both; clicked => { root.both = !root.both; } }
-                Rectangle {
-                    min-height: Theme.tap - 4px;
-                    border-radius: 8px;
-                    clip: true;
-                    background: root.reset-enabled ? Theme.panel-hi : Theme.panel;
+    property <length> margin: 8px;
+    property <length> stick-d: min(max(root.height * 0.42, 156px), 240px);
+    property <length> slider-w: min(max(root.width * 0.34, 260px), 420px);
+    property <length> group-w: min(520px, root.width - 2 * root.margin);
+
+    // Swallows every touch that no control takes, so nothing reaches the output screen below.
+    TouchArea { }
+
+    // Top centre: speed level, frame, both, reset, and the two lifts.
+    VerticalLayout {
+        x: (root.width - root.group-w) / 2;
+        y: root.margin;
+        width: root.group-w;
+        spacing: 4px;
+        Plate {
+            height: 66px;
+            VerticalLayout {
+                padding: 4px;
+                spacing: 2px;
+                HorizontalLayout {
+                    height: 44px;
+                    spacing: 4px;
+                    Btn { label: "低"; min-width: 44px; active: root.level == 0; clicked => { root.level = 0; } }
+                    Btn { label: "中"; min-width: 44px; active: root.level == 1; clicked => { root.level = 1; } }
+                    Btn { label: "高"; min-width: 44px; active: root.level == 2; clicked => { root.level = 2; } }
+                    Btn { label: "ロボット"; min-width: 64px; active: !root.field-frame; font: 13px; clicked => { root.field-frame = false; } }
+                    Btn { label: "フィールド"; min-width: 80px; active: root.field-frame; font: 13px; clicked => { root.field-frame = true; } }
+                    Btn { label: "両方"; min-width: 48px; active: root.both; clicked => { root.both = !root.both; } }
                     Rectangle {
-                        x: 0;
-                        width: root.reset-armed && root.reset-enabled ? parent.width : 0px;
-                        background: Theme.warn;
-                        animate width { duration: root.reset-armed ? 1s : 0ms; easing: linear; }
-                    }
-                    Text {
-                        text: root.reset-enabled ? "リセット(1 秒長押し)" : (root.stopped ? "停止中はリセット不可" : "動作中はリセット不可");
-                        color: root.reset-enabled ? (root.reset-armed ? #000000 : Theme.text) : Theme.dim;
-                        font-size: 14px;
-                        horizontal-alignment: center;
-                        vertical-alignment: center;
-                    }
-                    TouchArea {
-                        enabled: root.reset-enabled;
-                        pointer-event(e) => {
-                            if e.kind == PointerEventKind.cancel { root.reset-armed = false; return; }
-                            if e.button != PointerEventButton.left { return; }
-                            if e.kind == PointerEventKind.down { root.reset-armed = true; root.reset-pressed(); }
-                            else if e.kind == PointerEventKind.up || e.kind == PointerEventKind.cancel { root.reset-armed = false; }
+                        min-width: 100px;
+                        border-radius: 8px;
+                        clip: true;
+                        background: root.reset-enabled ? Theme.panel-hi : Theme.panel;
+                        Rectangle {
+                            x: 0;
+                            width: root.reset-armed && root.reset-enabled ? parent.width : 0px;
+                            background: Theme.warn;
+                            animate width { duration: root.reset-armed ? 1s : 0ms; easing: linear; }
+                        }
+                        Text {
+                            text: root.reset-enabled ? "リセット(1 秒長押し)" : (root.stopped ? "停止中は不可" : "動作中は不可");
+                            color: root.reset-enabled ? (root.reset-armed ? #000000 : Theme.text) : Theme.dim;
+                            font-size: 12px;
+                            width: parent.width;
+                            horizontal-alignment: center;
+                            vertical-alignment: center;
+                            overflow: elide;
+                        }
+                        TouchArea {
+                            enabled: root.reset-enabled;
+                            pointer-event(e) => {
+                                if e.kind == PointerEventKind.cancel { root.reset-armed = false; return; }
+                                if e.button != PointerEventButton.left { return; }
+                                if e.kind == PointerEventKind.down { root.reset-armed = true; root.reset-pressed(); }
+                                else if e.kind == PointerEventKind.up || e.kind == PointerEventKind.cancel { root.reset-armed = false; }
+                            }
                         }
                     }
                 }
-            }
-            Text {
-                text: root.message;
-                color: Theme.warn;
-                font-size: 13px;
-                horizontal-alignment: center;
-                wrap: word-wrap;
+                Text { height: 14px; text: root.speed-text; color: Theme.dim; font-size: 12px; horizontal-alignment: center; overflow: elide; }
             }
         }
-        VerticalLayout {
-            width: parent.width * 0.26;
-            Text { text: "旋回"; color: Theme.dim; font-size: 14px; horizontal-alignment: center; }
-            Slider {
-                enabled: !root.auto-active && root.visible;
-                moved(s) => { root.slider-moved(s); }
+        HorizontalLayout {
+            height: 118px;
+            spacing: 6px;
+            LiftColumn {
+                title: "左";
+                side: 0;
+                info: root.left-info;
+                presets: root.presets;
+                suction: root.left-suction;
+                stopped: root.stopped || !root.visible;
+                jog-pressed(d) => { root.jog-pressed(0, d); }
+                jog-released(s) => { root.jog-released(s); }
+                preset(i) => { root.preset-pressed(0, i); }
+                suction-toggled => { root.suction-toggled(0); }
             }
+            LiftColumn {
+                title: "右";
+                side: 1;
+                info: root.right-info;
+                presets: root.presets;
+                suction: root.right-suction;
+                stopped: root.stopped || !root.visible;
+                jog-pressed(d) => { root.jog-pressed(1, d); }
+                jog-released(s) => { root.jog-released(s); }
+                preset(i) => { root.preset-pressed(1, i); }
+                suction-toggled => { root.suction-toggled(1); }
+            }
+        }
+    }
+
+    // Bottom left: translation stick.
+    Stick {
+        x: root.margin;
+        y: root.height - root.margin - root.stick-d;
+        width: root.stick-d;
+        height: root.stick-d;
+        // Hidden (another page showing) counts as disabled: the panel stays alive, so a
+        // held finger must be let go of.
+        enabled: !root.auto-active && root.visible;
+        moved(x, y) => { root.stick-moved(x, y); }
+    }
+
+    // Bottom right: rotation slider.
+    Plate {
+        x: root.width - root.margin - root.slider-w;
+        y: root.height - root.margin - 84px;
+        width: root.slider-w;
+        height: 84px;
+        Text { y: 4px; text: "旋回"; color: Theme.dim; font-size: 14px; width: parent.width; horizontal-alignment: center; }
+        Slider {
+            x: 8px;
+            y: 22px;
+            width: parent.width - 16px;
+            height: 56px;
+            enabled: !root.auto-active && root.visible;
+            moved(s) => { root.slider-moved(s); }
+        }
+    }
+
+    // Bottom centre: why a lift is refused, or the last result.
+    Plate {
+        property <length> left-edge: root.margin + root.stick-d + root.margin;
+        x: self.left-edge;
+        width: root.width - root.slider-w - 3 * root.margin - root.stick-d;
+        height: 44px;
+        y: root.height - root.margin - self.height;
+        visible: root.lift-reason != "" || root.message != "";
+        VerticalLayout {
+            padding: 4px;
+            alignment: center;
+            Text { text: root.lift-reason; color: Theme.warn; font-size: 12px; horizontal-alignment: center; wrap: word-wrap; visible: root.lift-reason != ""; }
+            Text { text: root.message; color: Theme.warn; font-size: 12px; horizontal-alignment: center; wrap: word-wrap; visible: root.message != ""; }
         }
     }
 

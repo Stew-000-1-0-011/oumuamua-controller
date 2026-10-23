@@ -1,6 +1,7 @@
 import { Theme, ScreenState } from "theme.slint";
 import { MapPane } from "map.slint";
 import { ConsolePanel } from "console.slint";
+import { Btn } from "manual.slint";
 
 export struct WheelInfo { text: string, ok: bool }
 
@@ -37,6 +38,16 @@ export component OutputScreen inherits Rectangle {
     callback map-panned(length, length);
     callback map-zoomed(float, length, length);
     callback map-fit();
+
+    // 地図で姿勢を指定: banner while picking, confirmation once a pose was picked.
+    in property <bool> pose-pick: false;
+    in property <string> confirm-text;
+    in property <bool> confirm-active: false;
+    callback pose-dragging(float, float, float);
+    callback pose-picked(float, float, float);
+    callback pose-cancelled();
+    callback pose-confirm();
+    callback pose-quit();
 
     VerticalLayout {
         Rectangle {
@@ -81,6 +92,7 @@ export component OutputScreen inherits Rectangle {
                 width: parent.width * 0.55;
                 height: parent.height;
                 pane-id: 0;
+                pose-pick-enabled: root.pose-pick && !root.confirm-active;
                 image: root.map-image;
                 view-cx: root.map-cx;
                 view-cy: root.map-cy;
@@ -89,6 +101,48 @@ export component OutputScreen inherits Rectangle {
                 panned(dx, dy) => { root.map-panned(dx, dy); }
                 zoomed(f, x, y) => { root.map-zoomed(f, x, y); }
                 fit-pressed => { root.map-fit(); }
+                pose-dragging(x, y, yaw) => { root.pose-dragging(x, y, yaw); }
+                pose-picked(x, y, yaw) => { root.pose-picked(x, y, yaw); }
+                pose-cancelled => { root.pose-cancelled(); }
+            }
+            if root.pose-pick && !root.confirm-active: Rectangle {
+                x: 8px;
+                y: 8px;
+                width: parent.width * 0.55 - 16px;
+                height: 52px;
+                background: #12161cf0;
+                border-radius: 8px;
+                border-width: 2px;
+                border-color: Theme.accent;
+                TouchArea { }
+                HorizontalLayout {
+                    padding: 4px;
+                    padding-left: 10px;
+                    spacing: 8px;
+                    Text { text: "長押しして向きへドラッグ"; color: Theme.text; font-size: 16px; font-weight: 700; vertical-alignment: center; overflow: elide; }
+                    Btn { label: "やめる"; min-width: 80px; max-width: 96px; clicked => { root.pose-quit(); } }
+                }
+            }
+            if root.pose-pick && root.confirm-active: Rectangle {
+                x: 8px;
+                y: 8px;
+                width: parent.width * 0.55 - 16px;
+                height: 100px;
+                background: #12161cf0;
+                border-radius: 8px;
+                border-width: 2px;
+                border-color: Theme.accent;
+                TouchArea { }
+                VerticalLayout {
+                    padding: 6px;
+                    spacing: 4px;
+                    Text { text: root.confirm-text; color: Theme.text; font-size: 15px; font-weight: 700; horizontal-alignment: center; vertical-alignment: center; overflow: elide; }
+                    HorizontalLayout {
+                        spacing: 8px;
+                        Btn { label: "決定"; active: true; tint: Theme.ok; clicked => { root.pose-confirm(); } }
+                        Btn { label: "やめる"; clicked => { root.pose-quit(); } }
+                    }
+                }
             }
             ConsolePanel {
                 x: parent.width * 0.55;

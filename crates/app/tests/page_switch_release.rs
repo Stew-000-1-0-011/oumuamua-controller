@@ -50,8 +50,8 @@ fn holding_the_stick_while_the_page_changes_stops_motion() {
         c
     };
 
-    // Stick centre is about (101, 180) at 800x360; press well above it.
-    touch(ww, 0, 101., 110., Started);
+    // Stick centre is about (86, 274) at 800x360; press well above it.
+    touch(ww, 0, 86., 220., Started);
     assert!(read(1).vx > 0.0, "stick drives vx on the manual page: {:?}", read(1));
 
     // The page changes with the finger still down.
@@ -64,11 +64,11 @@ fn holding_the_stick_while_the_page_changes_stops_motion() {
     assert_eq!((c.vx, c.vy), (0.0, 0.0), "and nothing is left held: {c:?}");
 
     // The finger keeps moving or lifts: still nothing, and coming back does not resume it.
-    touch(ww, 0, 101., 100., Moved);
+    touch(ww, 0, 86., 210., Moved);
     assert_eq!(read(1).vx, 0.0);
     win.set_page(1);
     settle();
     assert_eq!(read(1).vx, 0.0, "a finger from before the switch does not resume");
-    touch(ww, 0, 101., 100., Ended);
+    touch(ww, 0, 86., 210., Ended);
     assert_eq!(read(1).vx, 0.0);
 }

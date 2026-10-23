@@ -54,24 +54,24 @@ fn stick_and_slider_drive_manual_at_once() {
     };
 
     // Finger 0 on the stick (well above its centre), finger 1 on the slider (right of its centre).
-    touch(w, 0, 130., 60., Started);
-    touch(w, 1, 800., 250., Started);
+    touch(w, 0, 113., 330., Started);
+    touch(w, 1, 900., 458., Started);
     let c = read();
     assert!(c.vx > 0.0, "stick drives vx: {c:?}");
     assert!(c.wz < 0.0, "slider drives wz at the same time: {c:?}");
 
     // Moving one finger leaves the other control alone.
-    touch(w, 1, 760., 250., Moved);
+    touch(w, 1, 860., 458., Moved);
     let c = read();
     assert!(c.vx > 0.0 && c.wz < 0.0, "{c:?}");
 
     // Lifting finger 0 zeroes only the stick.
-    touch(w, 0, 130., 60., Ended);
+    touch(w, 0, 113., 330., Ended);
     let c = read();
     assert_eq!((c.vx, c.vy), (0.0, 0.0));
     assert!(c.wz < 0.0, "slider still held by finger 1: {c:?}");
 
-    touch(w, 1, 760., 250., Ended);
+    touch(w, 1, 860., 458., Ended);
     let c = read();
     assert_eq!((c.vx, c.vy, c.wz), (0.0, 0.0, 0.0));
 }
@@ -94,16 +94,16 @@ fn jog_release_is_per_side() {
     };
 
     // Finger 0 on left 上, finger 1 on right 下.
-    touch(w, 0, 310., 140., Started);
-    touch(w, 1, 480., 140., Started);
+    touch(w, 0, 265., 123., Started);
+    touch(w, 1, 505., 123., Started);
     assert_eq!(read(), (1, -1));
-    touch(w, 0, 310., 140., Ended);
+    touch(w, 0, 265., 123., Ended);
     assert_eq!(read(), (0, -1), "right keeps jogging");
-    touch(w, 0, 310., 140., Started);
+    touch(w, 0, 265., 123., Started);
     assert_eq!(read(), (1, -1));
-    touch(w, 1, 480., 140., Ended);
+    touch(w, 1, 505., 123., Ended);
     assert_eq!(read(), (1, 0), "left keeps jogging");
-    touch(w, 0, 310., 140., Ended);
+    touch(w, 0, 265., 123., Ended);
     assert_eq!(read(), (0, 0));
 }
 
@@ -134,20 +134,20 @@ fn jog_survives_toggling_both_mid_hold() {
 
     host.set_both(true);
     settle();
-    touch(w, 0, 310., 140., Started);
+    touch(w, 0, 265., 123., Started);
     assert_eq!(read(), (1, 1));
     // 両方 turned off while the finger is down (set like the 両方 button does).
     host.set_both(false);
     settle();
     assert_eq!(read(), (0, 0), "toggling 両方 drops held jogs");
-    touch(w, 0, 310., 140., Ended);
+    touch(w, 0, 265., 123., Ended);
     assert_eq!(read(), (0, 0));
     // And the other way round.
-    touch(w, 0, 310., 140., Started);
+    touch(w, 0, 265., 123., Started);
     assert_eq!(read(), (1, 0));
     host.set_both(true);
     settle();
-    touch(w, 0, 310., 140., Ended);
+    touch(w, 0, 265., 123., Ended);
     assert_eq!(read(), (0, 0), "no side is left jogging");
 }
 
@@ -168,12 +168,12 @@ fn two_fingers_on_one_side_share_it() {
         (c.jog_left, c.jog_right)
     };
     // Left 上 and left 下: the later press wins, and lifting either stops that side (intended).
-    touch(w, 0, 310., 140., Started);
-    touch(w, 1, 350., 140., Started);
+    touch(w, 0, 265., 123., Started);
+    touch(w, 1, 315., 123., Started);
     assert_eq!(read(), (-1, 0));
-    touch(w, 1, 350., 140., Ended);
+    touch(w, 1, 315., 123., Ended);
     assert_eq!(read(), (0, 0));
-    touch(w, 0, 310., 140., Ended);
+    touch(w, 0, 265., 123., Ended);
     assert_eq!(read(), (0, 0));
 }
 
@@ -203,22 +203,22 @@ fn read_all(manual: &Rc<RefCell<Manual>>) -> ControlInput {
 fn cancel_of_all_fingers_zeroes_everything_and_ids_are_reusable() {
     let (host, manual) = full_host();
     let w = host.window();
-    touch(w, 0, 130., 60., Started);
-    touch(w, 1, 800., 250., Started);
-    touch(w, 2, 310., 140., Started);
+    touch(w, 0, 113., 330., Started);
+    touch(w, 1, 900., 458., Started);
+    touch(w, 2, 265., 123., Started);
     let c = read_all(&manual);
     assert!(c.vx > 0.0 && c.wz < 0.0 && c.jog_left == 1, "{c:?}");
 
-    touch(w, 0, 130., 60., Cancelled);
-    touch(w, 1, 800., 250., Cancelled);
-    touch(w, 2, 310., 140., Cancelled);
+    touch(w, 0, 113., 330., Cancelled);
+    touch(w, 1, 900., 458., Cancelled);
+    touch(w, 2, 265., 123., Cancelled);
     let c = read_all(&manual);
     assert_eq!((c.vx, c.vy, c.wz, c.jog_left, c.jog_right), (0.0, 0.0, 0.0, 0, 0), "{c:?}");
 
     // id 0 is reused for a fresh press on the stick.
-    touch(w, 0, 130., 60., Started);
+    touch(w, 0, 113., 330., Started);
     assert!(read_all(&manual).vx > 0.0);
-    touch(w, 0, 130., 60., Ended);
+    touch(w, 0, 113., 330., Ended);
     assert_eq!(read_all(&manual).vx, 0.0);
 }
 
@@ -226,12 +226,12 @@ fn cancel_of_all_fingers_zeroes_everything_and_ids_are_reusable() {
 fn first_finger_up_before_second_finger_up() {
     let (host, manual) = full_host();
     let w = host.window();
-    touch(w, 0, 130., 60., Started);
-    touch(w, 1, 800., 250., Started);
-    touch(w, 0, 130., 60., Ended);
+    touch(w, 0, 113., 330., Started);
+    touch(w, 1, 900., 458., Started);
+    touch(w, 0, 113., 330., Ended);
     let c = read_all(&manual);
     assert_eq!((c.vx, c.vy), (0.0, 0.0));
     assert!(c.wz < 0.0, "slider still held: {c:?}");
-    touch(w, 1, 800., 250., Ended);
+    touch(w, 1, 900., 458., Ended);
     assert_eq!(read_all(&manual).wz, 0.0);
 }

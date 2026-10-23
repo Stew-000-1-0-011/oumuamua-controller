@@ -24,8 +24,6 @@ const BEACON_TTL: Duration = Duration::from_secs(5);
 const MAP_INTERVAL: Duration = Duration::from_millis(50);
 /// The pane id of the output page's map.
 const OUTPUT_MAP: i32 = 0;
-/// The pane id of the auto page's map (the one that picks poses).
-const AUTO_MAP: i32 = 1;
 const NAME_FILE: &str = "client_name";
 const TARGET_FILE: &str = "last_target";
 
@@ -262,15 +260,11 @@ impl Glue {
         scene
     }
 
-    /// Redraws the map that is showing (output page: pane 0, auto page: pane 1) when something
-    /// changed, at most at 20 Hz.
+    /// Redraws the output map (pane 0, always under the manual and auto overlays too) when
+    /// something changed, at most at 20 Hz.
     fn render_maps(&mut self, events: bool) {
         let Some(w) = self.window.upgrade() else { return };
-        let pane_id = match (w.get_connected(), w.get_page()) {
-            (true, 0) => Some(OUTPUT_MAP),
-            (true, 2) => Some(AUTO_MAP),
-            _ => None,
-        };
+        let pane_id = w.get_connected().then_some(OUTPUT_MAP);
         if pane_id != self.shown_pane {
             self.scene_dirty = true;
         }
@@ -296,17 +290,10 @@ impl Glue {
             let buf = map::render(&p.view, p.size.0, p.size.1, &self.scene(p));
             let image = slint::Image::from_rgba8_premultiplied(buf);
             let (cx, cy, scale) = (p.view.center.0, p.view.center.1, p.view.scale / sf);
-            if pane_id == OUTPUT_MAP {
-                w.set_map_image(image);
-                w.set_map_cx(cx);
-                w.set_map_cy(cy);
-                w.set_map_scale(scale);
-            } else {
-                w.set_auto_map_image(image);
-                w.set_auto_map_cx(cx);
-                w.set_auto_map_cy(cy);
-                w.set_auto_map_scale(scale);
-            }
+            w.set_map_image(image);
+            w.set_map_cx(cx);
+            w.set_map_cy(cy);
+            w.set_map_scale(scale);
         }
         self.scene_dirty = false;
         self.last_render = Some(Instant::now());
@@ -669,7 +656,7 @@ impl Glue {
 
     fn auto_pose_dragging(&mut self, x: f32, y: f32, yaw: f32) {
         self.pending_pose = None;
-        let p = self.pane(AUTO_MAP);
+        let p = self.pane(OUTPUT_MAP);
         p.pose_drag = Some(([f64::from(x), f64::from(y)], f64::from(yaw)));
         p.dirty = true;
     }
@@ -681,7 +668,7 @@ impl Glue {
 
     fn auto_pose_clear(&mut self) {
         self.pending_pose = None;
-        let p = self.pane(AUTO_MAP);
+        let p = self.pane(OUTPUT_MAP);
         p.pose_drag = None;
         p.dirty = true;
     }
@@ -693,6 +680,15 @@ impl Glue {
             self.auto_send("自己位置".to_owned(), |req| Msg::SetPose { req, x, y, yaw });
         }
         self.auto_pose_clear();
+    }
+
+    /// Shows the picked pose awaiting 決定 on the output screen (it is not tied to the auto page).
+    fn sync_pose_confirm(&self) {
+        let Some(w) = self.window.upgrade() else { return };
+        w.set_auto_confirm_active(self.pending_pose.is_some());
+        if let Some((x, y, yaw)) = self.pending_pose {
+            w.set_auto_confirm_text(auto::pose_text(x, y, yaw).into());
+        }
     }
 
     /// Shows RESULTs of auto-page requests and TASK_DONE on the bottom line.
@@ -780,10 +776,6 @@ impl Glue {
         w.set_auto_tracker(state.is_some_and(|s| s.tracker_enabled));
         w.set_auto_message(self.auto_message.0.as_str().into());
         w.set_auto_message_ok(self.auto_message.1);
-        w.set_auto_confirm_active(self.pending_pose.is_some());
-        if let Some((x, y, yaw)) = self.pending_pose {
-            w.set_auto_confirm_text(auto::pose_text(x, y, yaw).into());
-        }
         let block_states: Vec<i32> = (0..blocks).map(|b| i32::from(!auto::can_pick(&mem, b))).collect();
         let mut cells = vec![0; usize::from(cols) * usize::from(rows)];
         for &(c, r) in &mem.placed {
@@ -894,7 +886,7 @@ impl Glue {
     /// visible tab changed, at most every 100 ms (at once after a tab switch).
     fn refresh_console(&mut self) {
         let Some(w) = self.window.upgrade() else { return };
-        if !w.get_connected() || w.get_page() != 0 {
+        if !w.get_connected() {
             return;
         }
         let cs = w.global::<ConsoleState>();
@@ -1069,7 +1061,7 @@ impl Glue {
         self.auto_reqs.clear();
         self.auto_message = (String::new(), true);
         self.pending_pose = None;
-        self.pane(AUTO_MAP).pose_drag = None;
+        self.pane(OUTPUT_MAP).pose_drag = None;
         self.last_task = None;
         self.start_pending = None;
         self.last_sent_task = None;
@@ -1159,6 +1151,7 @@ impl Glue {
         self.collect_auto_results();
         self.poll_console(connected_now);
         self.sync_manual();
+        self.sync_pose_confirm();
         self.refresh();
         self.refresh_console();
         if let Some(w) = self.window.upgrade()
@@ -1202,7 +1195,7 @@ impl Glue {
         w.set_mode(mode);
         w.set_stopped(self.control.estop || mode == 2);
         w.set_notice(self.notice.as_str().into());
-        if connected && w.get_page() == 0 {
+        if connected {
             self.refresh_band(&w);
         }
         let (status, status_color) = match &conn {
@@ -1382,30 +1375,28 @@ pub fn start(window: &MainWindow) -> Rc<RefCell<GlueHandle>> {
         window.on_auto_pose_dragging(move |x, y, yaw| {
             let mut g = g.borrow_mut();
             g.auto_pose_dragging(x, y, yaw);
+            g.sync_pose_confirm();
             g.render_maps(false);
         });
         let g = glue.clone();
         window.on_auto_pose_picked(move |x, y, yaw| {
             let mut g = g.borrow_mut();
             g.auto_pose_picked(x, y, yaw);
+            g.sync_pose_confirm();
             g.render_maps(false);
         });
         let g = glue.clone();
         window.on_auto_pose_cancelled(move || {
             let mut g = g.borrow_mut();
             g.auto_pose_clear();
-            g.render_maps(false);
-        });
-        let g = glue.clone();
-        window.on_auto_pose_dismiss(move || {
-            let mut g = g.borrow_mut();
-            g.auto_pose_clear();
+            g.sync_pose_confirm();
             g.render_maps(false);
         });
         let g = glue.clone();
         window.on_auto_pose_confirm(move || {
             let mut g = g.borrow_mut();
             g.auto_pose_confirm();
+            g.sync_pose_confirm();
             g.render_maps(false);
         });
         let cs = window.global::<ConsoleState>();
@@ -1553,5 +1544,77 @@ mod tests {
         let a = new_client_name();
         assert!(a.starts_with("phone-") && a.len() == 14, "{a}");
         assert_ne!(a, new_client_name());
+    }
+
+    fn touch(w: &slint::Window, x: f32, y: f32, phase: i_slint_core::input::TouchPhase) {
+        use i_slint_core::{lengths::LogicalPoint, platform::{InternalEvent, WindowEvent}};
+        w.dispatch_event(WindowEvent::internal(InternalEvent::Touch { id: 0, position: LogicalPoint::new(x, y), phase }));
+    }
+
+    fn pump(ms: u64) {
+        i_slint_backend_testing::mock_elapsed_time(Duration::from_millis(ms));
+        slint::platform::update_timers_and_animations();
+    }
+
+    /// The whole 地図で姿勢を指定 flow on the real window and the in-app demo robot: one tap on
+    /// 決定 sends exactly one SET_POSE, and the robot ends up at the picked pose.
+    #[test]
+    fn pose_pick_flow_sends_one_set_pose() {
+        use i_slint_core::input::TouchPhase::{Ended, Moved, Started};
+        let dir = tempfile::tempdir().unwrap();
+        storage::set_data_dir(dir.path().to_path_buf());
+        i_slint_backend_testing::init_no_event_loop();
+        let win = MainWindow::new().unwrap();
+        win.window().set_size(slint::LogicalSize::new(800., 360.));
+        let handle = start(&win);
+        win.show().unwrap();
+        win.invoke_connect_demo();
+        let glue = handle.borrow()._glue.clone();
+        let t0 = Instant::now();
+        while !glue.borrow().link_live() {
+            assert!(t0.elapsed() < Duration::from_secs(10), "demo never connected");
+            pump(50);
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        pump(100);
+        win.set_page(2);
+        pump(50);
+        // 地図で姿勢を指定 (bottom row, right end).
+        touch(win.window(), 630., 332., Started);
+        touch(win.window(), 630., 332., Ended);
+        pump(50);
+        assert_eq!(win.get_page(), 0, "the button shows the output screen");
+        assert!(win.get_pose_pick());
+        // Long press on the map, drag towards upper right, lift.
+        touch(win.window(), 200., 216., Started);
+        pump(600);
+        touch(win.window(), 240., 200., Moved);
+        touch(win.window(), 260., 180., Moved);
+        touch(win.window(), 260., 180., Ended);
+        pump(50);
+        assert!(win.get_auto_confirm_active(), "the confirmation is shown");
+        let (px, py, _) = glue.borrow().pending_pose.expect("a picked pose");
+        assert_eq!(glue.borrow().auto_reqs.len(), 0, "nothing is sent before 決定");
+        // 決定
+        touch(win.window(), 100., 148., Started);
+        touch(win.window(), 100., 148., Ended);
+        assert_eq!(glue.borrow().auto_reqs.len(), 1, "exactly one SET_POSE");
+        assert!(!win.get_pose_pick() && !win.get_auto_confirm_active());
+        // A second tap where 決定 was now lands on the map and sends nothing.
+        touch(win.window(), 100., 148., Started);
+        touch(win.window(), 100., 148., Ended);
+        pump(50);
+        assert_eq!(glue.borrow().auto_reqs.len(), 1);
+        // The demo robot took the pose.
+        let t0 = Instant::now();
+        loop {
+            pump(50);
+            std::thread::sleep(Duration::from_millis(20));
+            let pose = glue.borrow().model.state().and_then(|s| s.pose);
+            if pose.is_some_and(|p| (p[0] - px).abs() < 0.05 && (p[1] - py).abs() < 0.05) {
+                break;
+            }
+            assert!(t0.elapsed() < Duration::from_secs(10), "the robot never took the pose {px},{py}");
+        }
     }
 }

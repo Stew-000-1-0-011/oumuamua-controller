@@ -28,7 +28,11 @@ export component MainWindow inherits Window {
     callback connect-demo();
     callback disconnect();
     property <bool> confirm-leave: false;
-    changed connected => { if !root.connected { root.confirm-leave = false; } }
+    // 地図で姿勢を指定: the output map picks a pose by long press and drag (page 0 only).
+    in-out property <bool> pose-pick: false;
+    changed connected => { if !root.connected { root.confirm-leave = false; root.pose-pick = false; } }
+    // Leaving the output screen ends the pose pick.
+    changed page => { if root.page != 0 && root.pose-pick { root.pose-pick = false; root.auto-pose-cancelled(); } }
     // Strip: link status text/colour, rtt in ms (-1 unknown), stop latch ("解除" shown).
     in property <string> conn-text: "未接続";
     in property <color> conn-color: Theme.dim;
@@ -95,10 +99,6 @@ export component MainWindow inherits Window {
     in property <bool> auto-tracker: false;
     in property <string> auto-message;
     in property <bool> auto-message-ok: true;
-    in property <image> auto-map-image;
-    in property <float> auto-map-cx;
-    in property <float> auto-map-cy;
-    in property <float> auto-map-scale: 50;
     in property <string> auto-confirm-text;
     in property <bool> auto-confirm-active: false;
 
@@ -116,7 +116,6 @@ export component MainWindow inherits Window {
     callback auto-pose-picked(float, float, float);
     callback auto-pose-cancelled();
     callback auto-pose-confirm();
-    callback auto-pose-dismiss();
     callback manual-stick(float, float);
     callback manual-slider(float);
     callback manual-jog(int, int);
@@ -128,7 +127,7 @@ export component MainWindow inherits Window {
     callback manual-cancel-auto();
     // Level / frame / both changed on the page.
     callback manual-options-changed();
-    // Map pane 0 (output page); pane id first so more panes can share the Rust side.
+    // Map pane 0 (the output map); pane id first so more panes can share the Rust side.
     callback map-geometry(int, length, length);
     callback map-panned(int, length, length);
     callback map-zoomed(int, float, length, length);
@@ -194,6 +193,14 @@ export component MainWindow inherits Window {
         map-panned(dx, dy) => { root.map-panned(0, dx, dy); }
         map-zoomed(f, x, y) => { root.map-zoomed(0, f, x, y); }
         map-fit => { root.map-fit(0); }
+        pose-pick: root.pose-pick;
+        confirm-text: root.auto-confirm-text;
+        confirm-active: root.auto-confirm-active;
+        pose-dragging(x, y, yaw) => { root.auto-pose-dragging(x, y, yaw); }
+        pose-picked(x, y, yaw) => { root.auto-pose-picked(x, y, yaw); }
+        pose-cancelled => { root.auto-pose-cancelled(); }
+        pose-confirm => { root.pose-pick = false; root.auto-pose-confirm(); }
+        pose-quit => { root.pose-pick = false; root.auto-pose-cancelled(); }
     }
 
     ManualPanel {
@@ -261,12 +268,6 @@ export component MainWindow inherits Window {
         tracker: root.auto-tracker;
         message: root.auto-message;
         message-ok: root.auto-message-ok;
-        map-image: root.auto-map-image;
-        map-cx: root.auto-map-cx;
-        map-cy: root.auto-map-cy;
-        map-scale: root.auto-map-scale;
-        confirm-text: root.auto-confirm-text;
-        confirm-active: root.auto-confirm-active;
         run-pick(g, b) => { root.auto-run-pick(g, b); }
         run-place(g, c, r) => { root.auto-run-place(g, c, r); }
         run-move(k) => { root.auto-run-move(k); }
@@ -276,15 +277,7 @@ export component MainWindow inherits Window {
         start-path(n) => { root.auto-start-path(n); }
         stop-path => { root.auto-stop-path(); }
         toggle-tracker => { root.auto-toggle-tracker(); }
-        map-geometry(w, h) => { root.map-geometry(1, w, h); }
-        map-panned(dx, dy) => { root.map-panned(1, dx, dy); }
-        map-zoomed(f, x, y) => { root.map-zoomed(1, f, x, y); }
-        map-fit => { root.map-fit(1); }
-        pose-dragging(x, y, yaw) => { root.auto-pose-dragging(x, y, yaw); }
-        pose-picked(x, y, yaw) => { root.auto-pose-picked(x, y, yaw); }
-        pose-cancelled => { root.auto-pose-cancelled(); }
-        pose-confirm => { root.auto-pose-confirm(); }
-        pose-dismiss => { root.auto-pose-dismiss(); }
+        pick-pose => { root.page = 0; root.pose-pick = true; }
     }
 
     EdgeStrip {
