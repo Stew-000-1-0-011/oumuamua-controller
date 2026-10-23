@@ -18,6 +18,8 @@ use std::sync::mpsc::Receiver;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 const TICK: Duration = Duration::from_millis(33);
+/// A robot whose beacon has not been heard for this long leaves the list (it sends 1 per second).
+const BEACON_TTL: Duration = Duration::from_secs(5);
 /// The map is redrawn at most this often (20 Hz).
 const MAP_INTERVAL: Duration = Duration::from_millis(50);
 /// The pane id of the output page's map.
@@ -71,7 +73,8 @@ struct Glue {
     rx: Option<Receiver<LinkEvent>>,
     _discovery: Option<Discovery>,
     beacons_rx: Option<link::discovery::Beacons>,
-    beacons: Vec<(String, SocketAddr)>,
+    beacons: Vec<(String, SocketAddr, Instant)>,
+    beacons_dirty: std::cell::Cell<bool>,
     beacons_model: Rc<VecModel<Beacon>>,
     /// Phone-side emergency stop latch; sent as `ControlInput.estop`.
     control: ControlInput,
@@ -181,6 +184,13 @@ fn console_row(r: &Row) -> ConsoleRow {
             ConsoleRow { folded: false, hidden: 0, block: 0, spans: ModelRc::from(Rc::new(VecModel::from(spans))) }
         }
     }
+}
+
+/// Drops beacons not heard within BEACON_TTL; true if any was dropped.
+fn expire_beacons(list: &mut Vec<(String, SocketAddr, Instant)>, now: Instant) -> bool {
+    let before = list.len();
+    list.retain(|b| now.saturating_duration_since(b.2) < BEACON_TTL);
+    list.len() != before
 }
 
 fn show_keyboard(g: &Glue) {
@@ -383,8 +393,20 @@ impl Glue {
         self.sync_manual();
     }
 
+    /// The robot refuses lift motion, suction-on, reset and tracker-on while stopped.
+    fn actuation_blocked(&self) -> bool {
+        manual::actuation_blocked(self.model.state().map(|s| s.mode), self.control.estop)
+    }
+
+    /// The window lost focus (or the app was paused): nothing may stay held.
+    fn window_deactivated(&mut self) {
+        self.manual.release_all();
+        self.sync_manual();
+        self.push_control();
+    }
+
     fn manual_jog(&mut self, side: i32, dir: i32) {
-        if self.manual_allowed() {
+        if self.manual_allowed() && !self.actuation_blocked() {
             self.manual.jog_press(side.clamp(0, 1) as u8, dir.clamp(-1, 1) as i8);
         }
         self.sync_manual();
@@ -413,7 +435,7 @@ impl Glue {
     }
 
     fn manual_preset(&mut self, side: i32, idx: i32) {
-        if !self.manual_allowed() {
+        if !self.manual_allowed() || self.actuation_blocked() {
             return;
         }
         let Some(cfg) = self.model.config() else { return };
@@ -437,6 +459,9 @@ impl Glue {
             2 => !(on_of(0) && on_of(1)),
             i => !on_of(usize::from(i)),
         };
+        if on && self.actuation_blocked() {
+            return;
+        }
         self.manual_send(false, |req| Msg::SetSuction { req, gripper, on });
     }
 
@@ -455,7 +480,7 @@ impl Glue {
             return;
         }
         // The button is held for a second, during which a lift may have started to move.
-        if !self.manual_allowed() || self.lift_moving() {
+        if !self.manual_allowed() || self.lift_moving() || self.actuation_blocked() {
             return;
         }
         self.manual_send(true, |req| Msg::LiftZero { req, gripper: 2 });
@@ -494,7 +519,7 @@ impl Glue {
         w.set_manual_right_info(manual::height_text(grippers[1].as_ref()).into());
         w.set_manual_left_suction(grippers[0].is_some_and(|g| g.suction));
         w.set_manual_right_suction(grippers[1].is_some_and(|g| g.suction));
-        w.set_manual_reset_enabled(!self.lift_moving());
+        w.set_manual_reset_enabled(!self.lift_moving() && !self.actuation_blocked());
         let (lv, wv) = self.manual.level_pair(&self.levels());
         w.set_manual_speed_text(format!("並進 {lv:.1} m/s  旋回 {wv:.1} rad/s").into());
         w.set_manual_auto_label(
@@ -617,6 +642,9 @@ impl Glue {
             return;
         }
         let on = !self.model.state().is_some_and(|s| s.tracker_enabled);
+        if on && self.actuation_blocked() {
+            return;
+        }
         self.auto_send(if on { "追従 入".to_owned() } else { "追従 切".to_owned() }, |req| Msg::SetTracker { req, on });
     }
 
@@ -958,6 +986,27 @@ impl Glue {
         self.console_built = Some(Instant::now());
     }
 
+    /// Collects beacons; one that has not been heard for BEACON_TTL leaves the list.
+    fn poll_beacons(&mut self) {
+        let now = Instant::now();
+        let mut changed = false;
+        if let Some(rx) = &self.beacons_rx {
+            while let Ok((name, addr)) = rx.try_recv() {
+                match self.beacons.iter_mut().find(|(n, a, _)| *n == name && *a == addr) {
+                    Some(b) => b.2 = now,
+                    None => {
+                        self.beacons.push((name, addr, now));
+                        changed = true;
+                    }
+                }
+            }
+        }
+        changed |= expire_beacons(&mut self.beacons, now);
+        if changed {
+            self.beacons_dirty.set(true);
+        }
+    }
+
     fn push_control(&self) {
         if let Some(c) = &self.client {
             c.set_control(self.control);
@@ -1018,14 +1067,9 @@ impl Glue {
     }
 
     fn poll(&mut self) {
-        if let Some(rx) = &self.beacons_rx {
-            while let Ok((name, addr)) = rx.try_recv() {
-                match self.beacons.iter_mut().find(|(n, a)| *n == name && *a == addr) {
-                    Some(_) => {}
-                    None => self.beacons.push((name, addr)),
-                }
-            }
-        }
+        // UI heartbeat: the link thread zeroes the motion if this stops for 250 ms.
+        self.push_control();
+        self.poll_beacons();
         let mut events = Vec::new();
         if let Some(rx) = &self.rx {
             while let Ok(ev) = rx.try_recv() {
@@ -1036,7 +1080,7 @@ impl Glue {
         let mut connected_now = false;
         for ev in events {
             connected_now |= matches!(ev, LinkEvent::Connected { .. });
-            if matches!(ev, LinkEvent::Rejected { .. } | LinkEvent::Bye { .. }) {
+            if matches!(ev, LinkEvent::Rejected { .. } | LinkEvent::Bye { .. } | LinkEvent::Failed { .. }) {
                 // The client thread idles after these; release it so Connect starts a fresh one.
                 self.client = None;
                 self.rx = None;
@@ -1115,11 +1159,11 @@ impl Glue {
         };
         w.set_connect_status(status.into());
         w.set_connect_status_color(status_color);
-        if self.beacons_model.row_count() != self.beacons.len() {
+        if self.beacons_dirty.replace(false) {
             self.beacons_model.set_vec(
                 self.beacons
                     .iter()
-                    .map(|(n, a)| Beacon { name: n.as_str().into(), addr: a.to_string().into() })
+                    .map(|(n, a, _)| Beacon { name: n.as_str().into(), addr: a.to_string().into() })
                     .collect::<Vec<_>>(),
             );
         }
@@ -1145,6 +1189,7 @@ pub fn start(window: &MainWindow) -> Rc<RefCell<GlueHandle>> {
         _discovery: discovery,
         beacons_rx,
         beacons: Vec::new(),
+        beacons_dirty: std::cell::Cell::new(true),
         beacons_model,
         control: ControlInput::default(),
         latch: StopLatch::default(),
@@ -1226,6 +1271,12 @@ pub fn start(window: &MainWindow) -> Rc<RefCell<GlueHandle>> {
         window.on_manual_jog(move |side, dir| g.borrow_mut().manual_jog(side, dir));
         let g = glue.clone();
         window.on_manual_jog_released(move || g.borrow_mut().manual_jog_released());
+        let g = glue.clone();
+        window.on_window_deactivated(move || {
+            if let Ok(mut g) = g.try_borrow_mut() {
+                g.window_deactivated();
+            }
+        });
         let g = glue.clone();
         window.on_manual_options_changed(move || g.borrow_mut().manual_options());
         let g = glue.clone();
@@ -1402,6 +1453,17 @@ impl Drop for GlueHandle {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn silent_beacons_expire_after_five_seconds() {
+        let t0 = Instant::now();
+        let addr: SocketAddr = "10.0.0.2:47800".parse().unwrap();
+        let mut list = vec![("old".to_owned(), addr, t0), ("new".to_owned(), addr, t0 + Duration::from_secs(4))];
+        assert!(!expire_beacons(&mut list, t0 + Duration::from_millis(4900)));
+        assert!(expire_beacons(&mut list, t0 + Duration::from_secs(6)));
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0].0, "new");
+    }
 
     #[test]
     fn target_parsing() {

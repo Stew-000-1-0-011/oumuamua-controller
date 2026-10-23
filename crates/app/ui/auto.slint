@@ -43,6 +43,7 @@ export component AutoPage inherits Rectangle {
     in property <[string]> paths;
     in property <string> active-path;
     in property <bool> tracker: false;
+    in property <bool> stopped: false;
     in property <string> message;
     in property <bool> message-ok: true;
     in property <bool> link-ok: true;
@@ -337,7 +338,7 @@ export component AutoPage inherits Rectangle {
             }
             Rectangle { }
             Btn { label: "経路の停止"; font: 13px; min-height: 36px; min-width: 100px; enabled: root.link-ok; tint: Theme.danger; clicked => { root.stop-path(); } }
-            Btn { label: root.tracker ? "追従 入" : "追従 切"; active: root.tracker; tint: Theme.ok; font: 13px; min-height: 36px; min-width: 90px; enabled: root.link-ok; clicked => { root.toggle-tracker(); } }
+            Btn { label: root.tracker ? "追従 入" : "追従 切"; active: root.tracker; tint: Theme.ok; font: 13px; min-height: 36px; min-width: 90px; enabled: root.link-ok && (!root.stopped || root.tracker); clicked => { root.toggle-tracker(); } }
         }
 
         // Result line

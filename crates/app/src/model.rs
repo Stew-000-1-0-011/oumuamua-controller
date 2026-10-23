@@ -160,6 +160,7 @@ impl AppModel {
             }
             LinkEvent::Rejected { reason } => self.conn = ConnState::Rejected(reason),
             LinkEvent::Bye { reason } => self.conn = ConnState::TakenOver(reason),
+            LinkEvent::Failed { message } => self.conn = ConnState::Rejected(message),
             LinkEvent::State { body, rtt_ms } => {
                 let rtt = rtt_ms.or(match self.conn {
                     ConnState::Connected { rtt_ms } => rtt_ms,
@@ -309,6 +310,8 @@ mod tests {
         assert_eq!(m.connection(), ConnState::Connecting);
         m.apply(LinkEvent::Rejected { reason: "busy".into() });
         assert_eq!(m.connection(), ConnState::Rejected("busy".into()));
+        m.apply(LinkEvent::Failed { message: "bind failed".into() });
+        assert_eq!(m.connection(), ConnState::Rejected("bind failed".into()));
         m.apply(LinkEvent::Bye { reason: "taken over".into() });
         assert_eq!(m.connection(), ConnState::TakenOver("taken over".into()));
     }

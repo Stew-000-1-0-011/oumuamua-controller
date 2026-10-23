@@ -22,6 +22,12 @@ pub fn motion_allowed(connected: bool, has_client: bool, page: i32, mode: Option
     connected && has_client && page == 1 && mode.is_some_and(|m| m != Mode::Auto)
 }
 
+/// Lift motion, suction-on, lift reset and tracker-on are refused by the robot while it is
+/// stopped (or an emergency stop is latched on this phone); the UI does not offer them.
+pub fn actuation_blocked(mode: Option<Mode>, estop: bool) -> bool {
+    estop || mode == Some(Mode::Stopped)
+}
+
 /// Maps a stick deflection to (vx, vy) in m/s. `dx` is positive to the screen's right and `dy`
 /// positive to the screen's bottom (Slint coordinates), both in -1..1. Up is +x (forward) and
 /// left is +y. Inside the deadzone the result is zero; the deflection length is clamped to 1.
@@ -207,6 +213,15 @@ mod tests {
         assert!(!motion_allowed(true, true, 0, Some(Mode::Manual)));
         assert!(!motion_allowed(false, true, 1, Some(Mode::Manual)));
         assert!(!motion_allowed(true, false, 1, Some(Mode::Manual)));
+    }
+
+    #[test]
+    fn actuation_blocked_when_stopped() {
+        assert!(actuation_blocked(Some(Mode::Stopped), false));
+        assert!(actuation_blocked(Some(Mode::Manual), true));
+        assert!(!actuation_blocked(Some(Mode::Manual), false));
+        assert!(!actuation_blocked(Some(Mode::Auto), false));
+        assert!(!actuation_blocked(None, false));
     }
 
     #[test]

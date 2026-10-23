@@ -125,6 +125,8 @@ export component MainWindow inherits Window {
     callback map-panned(int, length, length);
     callback map-zoomed(int, float, length, length);
     callback map-fit(int);
+    // The window lost focus / was paused: release every held input.
+    callback window-deactivated();
     callback stop-pressed();
     callback release-pressed();
 
@@ -132,6 +134,15 @@ export component MainWindow inherits Window {
     property <length> inset-bottom: root.safe-area-insets.bottom;
     property <length> inset-left: root.safe-area-insets.left;
     property <length> inset-right: root.safe-area-insets.right;
+
+    // Holds the keyboard focus so that deactivating the window (focus lost, Android pause)
+    // can be seen as has-focus going false.
+    focus-watch := FocusScope {
+        width: 0px;
+        height: 0px;
+        init => { self.focus(); }
+        changed has-focus => { if !self.has-focus { root.window-deactivated(); } }
+    }
 
     HorizontalLayout {
         padding-top: root.inset-top;
@@ -175,6 +186,7 @@ export component MainWindow inherits Window {
                     left-suction: root.manual-left-suction;
                     right-suction: root.manual-right-suction;
                     reset-enabled: root.manual-reset-enabled;
+                    stopped: root.stopped;
                     message: root.manual-message;
                     speed-text: root.manual-speed-text;
                     auto-active: root.mode == 1;
@@ -193,6 +205,7 @@ export component MainWindow inherits Window {
                     changed both => { root.manual-options-changed(); }
                 }
                 if root.page == 2: AutoPage {
+                    stopped: root.stopped;
                     pick-gripper <=> root.auto-pick-gripper;
                     place-gripper <=> root.auto-place-gripper;
                     sel-block <=> root.auto-block;

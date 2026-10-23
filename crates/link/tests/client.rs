@@ -317,3 +317,26 @@ fn bye_is_reported_and_stop_sends_bye() {
     let reason = bridge.wait(T, |d| if let Datagram::Bye { reason, .. } = d { Some(reason) } else { None });
     assert!(!reason.is_empty());
 }
+
+#[test]
+fn stale_control_goes_out_as_zero_motion() {
+    let (mut bridge, client, rx) = start();
+    bridge.accept();
+    next_event(&rx, T, |e| matches!(e, LinkEvent::Connected { .. }));
+    client.set_control(ControlInput { vx: 0.5, wz: 1.0, jog_left: 1, estop: true, ..Default::default() });
+    let c = bridge.wait(T, |d| match d {
+        Datagram::Control(c) if c.vx != 0.0 => Some(c),
+        _ => None,
+    });
+    assert!(c.estop && c.jog_left == 1);
+    // The UI stops calling set_control: after 250 ms the wire carries zero motion, estop stays.
+    std::thread::sleep(Duration::from_millis(350));
+    bridge.send_state(0, 0); // keep the link alive
+    let c = bridge.wait(T, |d| match d {
+        Datagram::Control(c) if c.vx == 0.0 => Some(c),
+        _ => None,
+    });
+    assert_eq!((c.vx, c.vy, c.wz, c.jog_left, c.jog_right), (0.0, 0.0, 0.0, 0, 0));
+    assert!(c.estop);
+    client.stop();
+}

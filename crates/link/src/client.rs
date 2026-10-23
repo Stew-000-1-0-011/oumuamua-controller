@@ -17,6 +17,8 @@ const HELLO_MS: u64 = 500;
 const LOST_MS: u64 = 1000;
 const REHELLO_MS: u64 = 2000;
 const READ_TIMEOUT: Duration = Duration::from_millis(5);
+/// The UI must call `set_control` at least this often; older input is not trusted to still be held.
+const CONTROL_STALE: Duration = Duration::from_millis(250);
 
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct ControlInput {
@@ -40,10 +42,12 @@ pub enum LinkEvent {
     /// No STATE for 1 s. Emitted once per silence.
     Lost,
     Bye { reason: String },
+    /// The link thread could not start (e.g. the UDP socket could not be bound).
+    Failed { message: String },
 }
 
 struct Shared {
-    control: Mutex<ControlInput>,
+    control: Mutex<(ControlInput, Instant)>,
     outbox: Mutex<Vec<Msg>>,
     next_req: AtomicU32,
     stop: AtomicBool,
@@ -63,7 +67,7 @@ impl Client {
         takeover: bool,
     ) -> (Client, Receiver<LinkEvent>) {
         let shared = Arc::new(Shared {
-            control: Mutex::new(ControlInput::default()),
+            control: Mutex::new((ControlInput::default(), Instant::now())),
             outbox: Mutex::new(Vec::new()),
             next_req: AtomicU32::new(1),
             stop: AtomicBool::new(false),
@@ -73,13 +77,16 @@ impl Client {
         let handle = std::thread::spawn(move || {
             if let Err(e) = run(&sh, addr, &client_name, takeover, &tx) {
                 eprintln!("link: client thread ended: {e}");
+                let _ = tx.send(LinkEvent::Failed { message: e.to_string() });
             }
         });
         (Client { shared, handle: Some(handle) }, rx)
     }
 
+    /// Set the input to stream. The UI must repeat this every frame (about 30 ms): when the last
+    /// call is older than 250 ms the motion axes and jogs go out as zero (estop is kept).
     pub fn set_control(&self, c: ControlInput) {
-        *self.shared.control.lock().unwrap() = c;
+        *self.shared.control.lock().unwrap() = (c, Instant::now());
     }
 
     /// Next request id (1, 2, ...).
@@ -103,6 +110,14 @@ impl Drop for Client {
             let _ = h.join();
         }
     }
+}
+
+/// The input to put on the wire: stale motion input becomes "no motion", estop is preserved.
+fn fresh_control((c, set_at): (ControlInput, Instant), now: Instant) -> ControlInput {
+    if now.saturating_duration_since(set_at) <= CONTROL_STALE {
+        return c;
+    }
+    ControlInput { field_frame: c.field_frame, estop: c.estop, ..ControlInput::default() }
 }
 
 fn random_session(avoid: u32) -> u32 {
@@ -265,7 +280,7 @@ impl Link<'_> {
             self.lost_sent = true;
             self.emit(LinkEvent::Lost);
         }
-        let c = *sh.control.lock().unwrap();
+        let c = fresh_control(*sh.control.lock().unwrap(), Instant::now());
         self.seq += 1;
         self.send(&Datagram::Control(Control {
             session: self.session,
@@ -334,4 +349,27 @@ fn run(
     }
     link.send(&Datagram::Bye { session: link.session, reason: "client closed".into() });
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn stale_control_is_zeroed_but_estop_kept() {
+        let c = ControlInput {
+            vx: 1.0,
+            vy: -1.0,
+            wz: 2.0,
+            field_frame: true,
+            jog_left: 1,
+            jog_right: -1,
+            estop: true,
+        };
+        let t0 = Instant::now();
+        assert_eq!(fresh_control((c, t0), t0 + Duration::from_millis(100)), c);
+        let z = fresh_control((c, t0), t0 + Duration::from_millis(300));
+        assert_eq!((z.vx, z.vy, z.wz, z.jog_left, z.jog_right), (0.0, 0.0, 0.0, 0, 0));
+        assert!(z.estop && z.field_frame);
+    }
 }

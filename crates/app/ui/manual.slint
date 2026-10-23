@@ -164,6 +164,8 @@ component LiftColumn inherits Rectangle {
     in property <int> side;
     in property <[PresetInfo]> presets;
     in property <bool> suction;
+    // Stopped: the robot refuses lift motion and suction-on.
+    in property <bool> stopped: false;
     callback jog-pressed(int);
     callback jog-released();
     callback preset(int);
@@ -181,14 +183,14 @@ component LiftColumn inherits Rectangle {
         }
         HorizontalLayout {
             spacing: 6px;
-            JogButton { label: "上"; pressed => { root.jog-pressed(1); } released => { root.jog-released(); } }
-            JogButton { label: "下"; pressed => { root.jog-pressed(-1); } released => { root.jog-released(); } }
+            JogButton { label: "上"; enabled: !root.stopped; pressed => { root.jog-pressed(1); } released => { root.jog-released(); } }
+            JogButton { label: "下"; enabled: !root.stopped; pressed => { root.jog-pressed(-1); } released => { root.jog-released(); } }
         }
         HorizontalLayout {
             spacing: 4px;
             for p[i] in root.presets: Btn {
                 label: p.name;
-                enabled: p.enabled;
+                enabled: p.enabled && !root.stopped;
                 font: 14px;
                 min-width: 44px;
                 clicked => { root.preset(i); }
@@ -198,6 +200,7 @@ component LiftColumn inherits Rectangle {
             label: root.suction ? "吸引 入" : "吸引 切";
             active: root.suction;
             tint: Theme.ok;
+            enabled: !root.stopped || root.suction;
             clicked => { root.suction-toggled(); }
         }
     }
@@ -216,6 +219,7 @@ export component ManualPage inherits Rectangle {
     in property <bool> left-suction: false;
     in property <bool> right-suction: false;
     in property <bool> reset-enabled: true;
+    in property <bool> stopped: false;
     in property <string> message;
     in property <bool> auto-active: false;
     in property <string> auto-label;
@@ -276,6 +280,7 @@ export component ManualPage inherits Rectangle {
                     info: root.left-info;
                     presets: root.presets;
                     suction: root.left-suction;
+                    stopped: root.stopped;
                     jog-pressed(d) => { root.jog-pressed(0, d); }
                     jog-released => { root.jog-released(); }
                     preset(i) => { root.preset-pressed(0, i); }
@@ -287,6 +292,7 @@ export component ManualPage inherits Rectangle {
                     info: root.right-info;
                     presets: root.presets;
                     suction: root.right-suction;
+                    stopped: root.stopped;
                     jog-pressed(d) => { root.jog-pressed(1, d); }
                     jog-released => { root.jog-released(); }
                     preset(i) => { root.preset-pressed(1, i); }
@@ -316,7 +322,7 @@ export component ManualPage inherits Rectangle {
                         animate width { duration: root.reset-armed ? 1s : 0ms; easing: linear; }
                     }
                     Text {
-                        text: root.reset-enabled ? "リセット(1 秒長押し)" : "動作中はリセット不可";
+                        text: root.reset-enabled ? "リセット(1 秒長押し)" : (root.stopped ? "停止中はリセット不可" : "動作中はリセット不可");
                         color: root.reset-enabled ? (root.reset-armed ? #000000 : Theme.text) : Theme.dim;
                         font-size: 14px;
                         horizontal-alignment: center;
