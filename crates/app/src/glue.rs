@@ -117,7 +117,8 @@ impl Glue {
     fn scene(&self, pane: &PaneState) -> Scene {
         let mut scene = Scene { pose_drag: pane.pose_drag, ..Scene::default() };
         if let Some(f) = self.model.field() {
-            scene.walls = f.walls.clone();
+            scene.bounds = Some(f.bounds);
+            scene.obstacles = f.obstacles.clone();
             scene.shelf = Some(f.shelf);
             scene.robot_radius = f.robot_radius;
         }
@@ -144,10 +145,7 @@ impl Glue {
         if !visible {
             return;
         }
-        let bounds = map::field_bounds(
-            self.model.field().map_or(&[], |f| f.walls.as_slice()),
-            self.model.field().map(|f| f.shelf),
-        );
+        let bounds = map::field_bounds(self.model.field().map(|f| f.bounds));
         if bounds != self.bounds {
             self.bounds = bounds;
             for p in self.maps.values_mut().filter(|p| !p.user_moved) {
@@ -328,7 +326,9 @@ impl Glue {
         w.set_mode(mode);
         w.set_stopped(self.control.estop || mode == 2);
         w.set_notice(self.notice.as_str().into());
-        self.refresh_band(&w);
+        if connected && w.get_page() == 0 {
+            self.refresh_band(&w);
+        }
         let (status, status_color) = match &conn {
             ConnState::TakenOver(r) => (format!("別のスマホに乗っ取られました: {r}"), slint::Color::from_rgb_u8(0xd1, 0x34, 0x2f)),
             ConnState::Rejected(r) => (format!("接続できません: {r}"), slint::Color::from_rgb_u8(0xd1, 0x34, 0x2f)),
@@ -378,7 +378,7 @@ pub fn start(window: &MainWindow) -> Rc<RefCell<GlueHandle>> {
         last_render: None,
         scene_dirty: true,
         was_visible: false,
-        bounds: map::field_bounds(&[], None),
+        bounds: map::field_bounds(None),
     }));
     {
         let g = glue.clone();

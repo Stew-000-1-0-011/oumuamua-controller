@@ -86,8 +86,8 @@ Rust (`crates/proto`) と Python (`ros/oumuamua_controller_bridge/oumuamua_contr
 | --- | --- | --- |
 | 50 | RESULT | `[50, req: u32, ok: bool, message: str]` |
 | 51 | CONFIG | `[51, robot_name: str, paths: [str], lift_presets: [[name: str, height: f64]], lift_max: f64, speed_levels: [[v: f64, w: f64] x3], blocks: u8, columns: u8, rows: u8]` |
-| 52 | FIELD | `[52, walls: [[x1, y1, x2, y2]], shelf: [xmin, ymin, xmax, ymax], start: [x, y, yaw], robot_radius: f64]` |
-| 53 | PATH_SHAPE | `[53, name: str, points: bin]`(SCAN と同じ点の並び。経路が変わるたび。消えたら空) |
+| 52 | FIELD | `[52, bounds: [xmin, ymin, xmax, ymax], obstacles: [[xmin, ymin, xmax, ymax]], shelf: [xmin, ymin, xmax, ymax], start: [x, y, yaw], robot_radius: f64]`(外周と障害物は箱。1200 バイトに収まるよう、辺ではなく箱で送る) |
+| 53 | PATH_SHAPE | `[53, name: str, points: bin]`(SCAN と同じ点の並び。経路が変わるたび。消えたら空。280 点を超える経路は、始点と終点を残して全体から等間隔に間引く) |
 | 54 | TASK_MEMORY | `[54, holding: [bool, bool], picked: [u8], placed: [[column: u8, row: u8]]]` |
 | 55 | TASK_DONE | `[55, kind: u8, ok: bool, message: str]` |
 | 56 | LOG | `[56, stamp_ms: u64, level: u8, name: str, text: str]`(エポックからの ms) |

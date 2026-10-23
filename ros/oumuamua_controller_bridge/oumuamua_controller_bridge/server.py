@@ -3,6 +3,7 @@ shell polling (see docs/protocol.md). No rclpy here."""
 import math
 import queue
 import socket
+import sys
 import threading
 import time
 import traceback
@@ -72,20 +73,24 @@ def _fit(msg: list) -> list:
     return msg
 
 
-def _walls(bounds, obstacles) -> list:
-    """Boxes [xmin, ymin, xmax, ymax] -> wall segments [x1, y1, x2, y2] (4 edges each)."""
-    boxes = []
-    if bounds:
-        boxes.append([float(v) for v in bounds])
+def _box(b) -> list:
+    return [float(v) for v in b]
+
+
+def _obstacle_boxes(obstacles) -> list:
+    """Config obstacles: a list of boxes or a flat list of 4n numbers -> [[xmin, ymin, xmax, ymax]]."""
     flat = list(obstacles or [])
     if flat and isinstance(flat[0], (list, tuple)):
-        flat = [float(v) for b in flat for v in b]
-    for i in range(0, len(flat) - 3, 4):
-        boxes.append([float(v) for v in flat[i:i + 4]])
-    walls = []
-    for x0, y0, x1, y1 in boxes:
-        walls += [[x0, y0, x1, y0], [x1, y0, x1, y1], [x1, y1, x0, y1], [x0, y1, x0, y0]]
-    return walls
+        return [_box(b) for b in flat if len(b) == 4]
+    return [_box(flat[i:i + 4]) for i in range(0, len(flat) - 3, 4)]
+
+
+def decimate(pts: list, limit: int) -> list:
+    """At most `limit` points, uniform stride over the whole path, first and last kept."""
+    n = len(pts)
+    if n <= limit:
+        return pts
+    return [pts[round(i * (n - 1) / (limit - 1))] for i in range(limit)]
 
 
 class BridgeServer:
@@ -166,8 +171,12 @@ class BridgeServer:
         addr = addr or self._addr
         if addr is None:
             return
+        data = P.encode(value)
+        if len(data) > MAX_DATAGRAM:
+            print(f"warning: outgoing datagram of {len(data)} bytes exceeds {MAX_DATAGRAM} (kind {value[0] if value else '?'})",
+                  file=sys.stderr)
         try:
-            self.sock.sendto(P.encode(value), addr)
+            self.sock.sendto(data, addr)
         except OSError:
             pass
 
@@ -230,8 +239,9 @@ class BridgeServer:
              [list(p) for p in c.get("lift_presets", [])], float(c.get("lift_max", 0.19)),
              [list(s) for s in c.get("speed_levels", [])], int(c.get("blocks", 6)),
              int(c.get("columns", 3)), int(c.get("rows", 3))],
-            [P.FIELD, _walls(c.get("field_bounds"), c.get("field_obstacles")),
-             list(c.get("shelf", [0, 0, 0, 0])), list(c.get("start_pose", [0, 0, 0])),
+            [P.FIELD, _box(c.get("field_bounds", [0, 0, 0, 0])),
+             _obstacle_boxes(c.get("field_obstacles")),
+             _box(c.get("shelf", [0, 0, 0, 0])), list(c.get("start_pose", [0, 0, 0])),
              float(c.get("robot_radius", 0.32))],
             self._path_shape_msg(snap),
             self._task_memory_msg(snap.task_text),
@@ -251,9 +261,7 @@ class BridgeServer:
         if self._path_shape is not None:
             return self._path_shape
         pts = _finite_points(snap.path)
-        if len(pts) > MAX_PATH_POINTS:
-            step = len(pts) / MAX_PATH_POINTS
-            pts = [pts[int(i * step)] for i in range(MAX_PATH_POINTS)]
+        pts = decimate(pts, MAX_PATH_POINTS)
         cur = self.handlers.current_path
         name = cur[0] if cur and pts else ""
         return [P.PATH_SHAPE, name, P.pack_points(pts)[0]]

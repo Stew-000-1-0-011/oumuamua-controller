@@ -134,7 +134,7 @@ def test_hello_welcome_and_initial_burst(env):
     cfg = p.rels(P.CONFIG)[0]
     assert cfg[1] == "oum" and cfg[2] == ["slalom", "start"] and cfg[4] == 0.19
     field = p.rels(P.FIELD)[0]
-    assert len(field[1]) == 8 and field[3] == [-2.2, 1.3, 0.0] and field[4] == 0.32
+    assert len(field[1]) == 4 and len(field[2]) == 1 and field[4] == [-2.2, 1.3, 0.0] and field[5] == 0.32
     mem = p.rels(P.TASK_MEMORY)[0]
     assert mem[1] == [True, False] and mem[2] == [1, 2]
 
@@ -351,3 +351,27 @@ def test_oversize_messages_are_truncated(env):
     assert p.wait(lambda: p.rels(P.SHELL_COMPLETION) and p.rels(P.LOG) and p.rels(P.RESULT))
     assert 0 < len(p.rels(P.SHELL_COMPLETION)[0][4]) < 2000
     assert all(len(P.encode(m)) <= 1200 for m in p.rx)
+
+
+def test_decimate_keeps_ends_and_limit():
+    from oumuamua_controller_bridge.server import decimate
+
+    pts = [(i * 0.01, 0.0) for i in range(483)]
+    out = decimate(pts, 280)
+    assert len(out) == 280 and out[0] == pts[0] and out[-1] == pts[-1]
+    assert decimate(pts[:10], 280) == pts[:10]
+
+
+def test_default_field_and_long_path_fit_one_datagram():
+    from oumuamua_controller_bridge import fake_robot as F
+    from oumuamua_controller_bridge.server import (
+        MAX_DATAGRAM, _box, _obstacle_boxes, decimate)
+
+    c = F.expand_env(F.DEFAULT_CONFIG)
+    field = [P.FIELD, _box(c["field_bounds"]), _obstacle_boxes(c.get("field_obstacles")),
+             _box(c["shelf"]), list(c["start_pose"]), float(c["robot_radius"])]
+    assert len(P.encode([P.REL, 0xFFFFFFFF, 0xFFFFFFFF, field])) <= MAX_DATAGRAM
+    pts = decimate([(i * 0.01, 0.0) for i in range(483)], P.MAX_POINTS_PER_SCAN)
+    shape = [P.PATH_SHAPE, "long_path_name", P.pack_points(pts)[0]]
+    assert len(P.encode([P.REL, 0xFFFFFFFF, 0xFFFFFFFF, shape])) <= MAX_DATAGRAM
+    assert P.unpack_points(shape[2])[-1][0] == 4.82

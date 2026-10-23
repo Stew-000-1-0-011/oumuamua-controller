@@ -295,7 +295,7 @@ pub enum Msg {
         columns: u8,
         rows: u8,
     },
-    Field { walls: Vec<[f64; 4]>, shelf: [f64; 4], start: [f64; 3], robot_radius: f64 },
+    Field { bounds: [f64; 4], obstacles: Vec<[f64; 4]>, shelf: [f64; 4], start: [f64; 3], robot_radius: f64 },
     PathShape { name: String, points: Vec<(i16, i16)> },
     TaskMemory { holding: [bool; 2], picked: Vec<u8>, placed: Vec<(u8, u8)> },
     TaskDone { kind: u8, ok: bool, message: String },
@@ -335,7 +335,7 @@ impl Msg {
             Config { robot_name, paths, lift_presets, lift_max, speed_levels, blocks, columns, rows } => {
                 row!(51; robot_name, paths, lift_presets, lift_max, speed_levels, blocks, columns, rows)
             }
-            Field { walls, shelf, start, robot_radius } => row!(52; walls, shelf, start, robot_radius),
+            Field { bounds, obstacles, shelf, start, robot_radius } => row!(52; bounds, obstacles, shelf, start, robot_radius),
             PathShape { name, points } => row!(53; name, &Raw(points_bin(points))),
             TaskMemory { holding, picked, placed } => row!(54; holding, picked, placed),
             TaskDone { kind, ok, message } => row!(55; kind, ok, message),
@@ -388,7 +388,13 @@ impl Msg {
                 columns: r.get(7)?,
                 rows: r.get(8)?,
             },
-            52 => Field { walls: r.get(1)?, shelf: r.get(2)?, start: r.get(3)?, robot_radius: r.get(4)? },
+            52 => Field {
+                bounds: r.get(1)?,
+                obstacles: r.get(2)?,
+                shelf: r.get(3)?,
+                start: r.get(4)?,
+                robot_radius: r.get(5)?,
+            },
             53 => PathShape { name: r.get(1)?, points: r.points(2)? },
             54 => TaskMemory { holding: r.get(1)?, picked: r.get(2)?, placed: r.get(3)? },
             55 => TaskDone { kind: r.get(1)?, ok: r.get(2)?, message: r.get(3)? },

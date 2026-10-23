@@ -39,7 +39,8 @@ pub struct Config {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Field {
-    pub walls: Vec<[f64; 4]>,
+    pub bounds: [f64; 4],
+    pub obstacles: Vec<[f64; 4]>,
     pub shelf: [f64; 4],
     pub start: [f64; 3],
     pub robot_radius: f64,
@@ -181,8 +182,8 @@ impl AppModel {
                     robot_name, paths, lift_presets, lift_max, speed_levels, blocks, columns, rows,
                 });
             }
-            Msg::Field { walls, shelf, start, robot_radius } => {
-                self.field = Some(Field { walls, shelf, start, robot_radius });
+            Msg::Field { bounds, obstacles, shelf, start, robot_radius } => {
+                self.field = Some(Field { bounds, obstacles, shelf, start, robot_radius });
             }
             Msg::PathShape { name, points } => {
                 self.path_shapes.insert(name, points);
@@ -325,7 +326,8 @@ mod tests {
             rows: 3,
         }));
         m.apply(LinkEvent::Msg(Msg::Field {
-            walls: vec![[0.0, 0.0, 1.0, 0.0]],
+            bounds: [0.0, 0.0, 5.0, 4.0],
+            obstacles: vec![[0.0, 0.0, 1.0, 1.0]],
             shelf: [1.0, 2.0, 3.0, 4.0],
             start: [0.0, 0.0, 0.0],
             robot_radius: 0.3,

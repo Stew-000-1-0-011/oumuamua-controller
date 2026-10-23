@@ -317,7 +317,7 @@ fn run(
         last_scan_done: None,
     };
     link.new_session();
-    let mut buf = [0u8; 2048];
+    let mut buf = [0u8; 65536];
     let mut next_tick = 0u64;
     while !sh.stop.load(Ordering::Relaxed) {
         if let Ok((n, src)) = link.sock.recv_from(&mut buf)

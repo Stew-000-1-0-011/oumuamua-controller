@@ -33,7 +33,7 @@ impl Discovery {
         let stop = Arc::new(AtomicBool::new(false));
         let stop2 = stop.clone();
         let handle = std::thread::spawn(move || {
-            let mut buf = [0u8; 2048];
+            let mut buf = [0u8; 65536];
             while !stop2.load(Ordering::Relaxed) {
                 let Ok((n, src)) = sock.recv_from(&mut buf) else { continue };
                 if let Ok(Datagram::Beacon { robot_name, port }) = Datagram::decode(&buf[..n]) {

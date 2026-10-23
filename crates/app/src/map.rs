@@ -2,7 +2,7 @@
 //! for the pixel buffer type.
 
 use slint::{Rgba8Pixel, SharedPixelBuffer};
-use tiny_skia::{Color, FillRule, LineCap, LineJoin, Paint, PathBuilder, Pixmap, Rect, Stroke, Transform};
+use tiny_skia::{Color, FillRule, LineCap, LineJoin, Paint, PathBuilder, PixmapMut, Rect, Stroke, Transform};
 
 /// Pixel size of the map and where it looks. +y is up on screen.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -61,24 +61,12 @@ impl MapView {
     }
 }
 
-/// The bounds to fit for a field: all walls and the shelf, or a default when unknown.
-pub fn field_bounds(walls: &[[f64; 4]], shelf: Option<[f64; 4]>) -> [f64; 4] {
-    let mut b = [f64::MAX, f64::MAX, f64::MIN, f64::MIN];
-    let mut add = |x: f64, y: f64| {
-        b[0] = b[0].min(x);
-        b[1] = b[1].min(y);
-        b[2] = b[2].max(x);
-        b[3] = b[3].max(y);
-    };
-    for w in walls {
-        add(w[0], w[1]);
-        add(w[2], w[3]);
+/// The bounds to fit for a field: its outer box, or a default when unknown.
+pub fn field_bounds(bounds: Option<[f64; 4]>) -> [f64; 4] {
+    match bounds {
+        Some(b) if b[0] < b[2] && b[1] < b[3] => b,
+        _ => [-1.0, -1.0, 5.0, 5.0],
     }
-    if let Some(s) = shelf {
-        add(s[0], s[1]);
-        add(s[2], s[3]);
-    }
-    if b[0] > b[2] { [-1.0, -1.0, 5.0, 5.0] } else { b }
 }
 
 /// One map pane's own view; panes zoom and pan independently.
@@ -140,7 +128,9 @@ impl PaneState {
 /// Everything drawn on the map, in field coordinates (m).
 #[derive(Debug, Clone, Default)]
 pub struct Scene {
-    pub walls: Vec<[f64; 4]>,
+    /// Outer boundary box `[xmin, ymin, xmax, ymax]`.
+    pub bounds: Option<[f64; 4]>,
+    pub obstacles: Vec<[f64; 4]>,
     pub shelf: Option<[f64; 4]>,
     pub robot_pose: Option<[f64; 3]>,
     pub robot_radius: f64,
@@ -170,7 +160,20 @@ fn paint(c: [u8; 4]) -> Paint<'static> {
     p
 }
 
-fn line(pm: &mut Pixmap, a: (f32, f32), b: (f32, f32), c: [u8; 4], width: f32) {
+fn rect_outline(pm: &mut PixmapMut, a: (f32, f32), b: (f32, f32), c: [u8; 4], width: f32) {
+    let mut pb = PathBuilder::new();
+    pb.move_to(a.0, a.1);
+    pb.line_to(b.0, a.1);
+    pb.line_to(b.0, b.1);
+    pb.line_to(a.0, b.1);
+    pb.close();
+    if let Some(path) = pb.finish() {
+        let stroke = Stroke { width, line_join: LineJoin::Miter, ..Stroke::default() };
+        pm.stroke_path(&path, &paint(c), &stroke, Transform::identity(), None);
+    }
+}
+
+fn line(pm: &mut PixmapMut, a: (f32, f32), b: (f32, f32), c: [u8; 4], width: f32) {
     let mut pb = PathBuilder::new();
     pb.move_to(a.0, a.1);
     pb.line_to(b.0, b.1);
@@ -181,7 +184,7 @@ fn line(pm: &mut Pixmap, a: (f32, f32), b: (f32, f32), c: [u8; 4], width: f32) {
 }
 
 /// An arrow from `at` pointing along `yaw`, `len` pixels long.
-fn arrow(pm: &mut Pixmap, at: (f32, f32), yaw: f64, len: f32, c: [u8; 4], width: f32) {
+fn arrow(pm: &mut PixmapMut, at: (f32, f32), yaw: f64, len: f32, c: [u8; 4], width: f32) {
     let (dx, dy) = (yaw.cos() as f32, -(yaw.sin() as f32));
     let tip = (at.0 + dx * len, at.1 + dy * len);
     line(pm, at, tip, c, width);
@@ -196,7 +199,10 @@ fn arrow(pm: &mut Pixmap, at: (f32, f32), yaw: f64, len: f32, c: [u8; 4], width:
 
 pub fn render(view: &MapView, w: u32, h: u32, scene: &Scene) -> SharedPixelBuffer<Rgba8Pixel> {
     let mut buf = SharedPixelBuffer::<Rgba8Pixel>::new(w.max(1), h.max(1));
-    let Some(mut pm) = Pixmap::new(w.max(1), h.max(1)) else { return buf };
+    // Draw straight into the buffer (RGBA8; opaque, so premultiplied == straight).
+    let Some(mut pm) = PixmapMut::from_bytes(buf.make_mut_bytes(), w.max(1), h.max(1)) else {
+        return SharedPixelBuffer::new(1, 1);
+    };
     let view = MapView { size: (w as f32, h as f32), ..*view };
     pm.fill(Color::from_rgba8(BACKGROUND[0], BACKGROUND[1], BACKGROUND[2], 255));
     let px = |p: (f64, f64)| view.to_px((p.0 as f32, p.1 as f32));
@@ -215,21 +221,11 @@ pub fn render(view: &MapView, w: u32, h: u32, scene: &Scene) -> SharedPixelBuffe
             }
         }
     }
-    for wl in &scene.walls {
-        line(&mut pm, px((wl[0], wl[1])), px((wl[2], wl[3])), WALL, 3.0);
+    for b in scene.bounds.iter().chain(&scene.obstacles) {
+        rect_outline(&mut pm, view.to_px((b[0] as f32, b[1] as f32)), view.to_px((b[2] as f32, b[3] as f32)), WALL, 3.0);
     }
     if let Some(s) = &scene.shelf {
-        let (a, b) = (px((s[0], s[1])), px((s[2], s[3])));
-        let mut pb = PathBuilder::new();
-        pb.move_to(a.0, a.1);
-        pb.line_to(b.0, a.1);
-        pb.line_to(b.0, b.1);
-        pb.line_to(a.0, b.1);
-        pb.close();
-        if let Some(path) = pb.finish() {
-            let stroke = Stroke { width: 2.5, ..Stroke::default() };
-            pm.stroke_path(&path, &paint(SHELF), &stroke, Transform::identity(), None);
-        }
+        rect_outline(&mut pm, px((s[0], s[1])), px((s[2], s[3])), SHELF, 2.5);
     }
     for pair in scene.path.windows(2) {
         let (a, b) = (view.to_px(pair[0]), view.to_px(pair[1]));
@@ -266,8 +262,6 @@ pub fn render(view: &MapView, w: u32, h: u32, scene: &Scene) -> SharedPixelBuffe
         arrow(&mut pm, px((p[0], p[1])), *yaw, 56.0, PICK, 6.0);
     }
 
-    // Premultiplied == straight here: the background is opaque, so every pixel is.
-    buf.make_mut_bytes().copy_from_slice(pm.data());
     buf
 }
 
@@ -344,7 +338,8 @@ mod tests {
     fn render_draws_walls_scan_and_overlay() {
         let view = MapView::fit(FIELD, 400.0, 300.0);
         let scene = Scene {
-            walls: vec![[0.0, 0.0, 6.0, 0.0]],
+            bounds: Some([0.0, 0.0, 6.0, 4.0]),
+            obstacles: vec![[2.0, 1.0, 3.0, 2.0]],
             shelf: Some([1.0, 1.0, 2.0, 2.0]),
             scan: vec![(3.0, 3.0)],
             path: vec![(1.0, 3.0), (5.0, 3.5)],
@@ -354,7 +349,7 @@ mod tests {
         let buf = render(&view, 400, 300, &scene);
         let (sx, sy) = view.to_px((3.0, 3.0));
         assert_ne!(&px(&buf, sx as u32, sy as u32)[..3], &BACKGROUND[..]);
-        let (wx, wy) = view.to_px((3.0, 0.0));
+        let (wx, wy) = view.to_px((3.0, 4.0));
         let near_wall = (-2..=2).any(|d| px(&buf, wx as u32, (wy as i32 + d) as u32)[..3] != BACKGROUND);
         assert!(near_wall);
     }
