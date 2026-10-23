@@ -71,6 +71,7 @@ export component MainWindow inherits Window {
     callback manual-jog-released();
     callback manual-preset(int, int);
     callback manual-suction(int);
+    callback manual-reset-pressed();
     callback manual-reset();
     callback manual-cancel-auto();
     // Level / frame / both changed on the page.
@@ -139,6 +140,7 @@ export component MainWindow inherits Window {
                     jog-released => { root.manual-jog-released(); }
                     preset-pressed(side, i) => { root.manual-preset(side, i); }
                     suction-toggled(side) => { root.manual-suction(side); }
+                    reset-pressed => { root.manual-reset-pressed(); }
                     reset-confirmed => { root.manual-reset(); }
                     cancel-auto => { root.manual-cancel-auto(); }
                     changed level => { root.manual-options-changed(); }

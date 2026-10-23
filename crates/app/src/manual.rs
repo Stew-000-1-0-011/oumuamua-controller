@@ -2,7 +2,7 @@
 //! labels. `glue.rs` owns an instance and copies its motion into `ControlInput`.
 
 use link::ControlInput;
-use proto::{Gripper, TaskState};
+use proto::{Gripper, Mode, TaskState};
 
 /// Stick deflection (0..1) below which nothing moves.
 pub const DEADZONE: f32 = 0.1;
@@ -10,6 +10,17 @@ pub const DEADZONE: f32 = 0.1;
 pub const RESET_HOLD_MS: u64 = 1000;
 /// Speeds used until CONFIG arrives (protocol.md defaults).
 pub const DEFAULT_LEVELS: [(f64, f64); 3] = [(0.3, 1.0), (0.8, 1.8), (1.5, 2.5)];
+
+/// How long after a reset press a confirmation is still believed.
+pub const RESET_CONFIRM_WINDOW_MS: u64 = 1500;
+/// Manual-page requests older than this no longer wait for their RESULT.
+pub const REQ_KEEP_MS: u64 = 10_000;
+
+/// Whether the manual page may drive the robot: it is showing, on a live link, and the robot
+/// is not in auto mode (or unknown).
+pub fn motion_allowed(connected: bool, has_client: bool, page: i32, mode: Option<Mode>) -> bool {
+    connected && has_client && page == 1 && mode.is_some_and(|m| m != Mode::Auto)
+}
 
 /// Maps a stick deflection to (vx, vy) in m/s. `dx` is positive to the screen's right and `dy`
 /// positive to the screen's bottom (Slint coordinates), both in -1..1. Up is +x (forward) and
@@ -185,6 +196,17 @@ mod tests {
         assert!((slider_to_omega(-0.5, LV) - 0.9).abs() < 1e-9);
         assert_eq!(slider_to_omega(0.05, LV), 0.0);
         assert!((slider_to_omega(5.0, LV) + 1.8).abs() < 1e-9);
+    }
+
+    #[test]
+    fn motion_gating() {
+        assert!(motion_allowed(true, true, 1, Some(Mode::Manual)));
+        assert!(motion_allowed(true, true, 1, Some(Mode::Stopped)));
+        assert!(!motion_allowed(true, true, 1, Some(Mode::Auto)));
+        assert!(!motion_allowed(true, true, 1, None));
+        assert!(!motion_allowed(true, true, 0, Some(Mode::Manual)));
+        assert!(!motion_allowed(false, true, 1, Some(Mode::Manual)));
+        assert!(!motion_allowed(true, false, 1, Some(Mode::Manual)));
     }
 
     #[test]

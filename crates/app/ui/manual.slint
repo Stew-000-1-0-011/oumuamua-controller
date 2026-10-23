@@ -68,6 +68,7 @@ component Stick inherits Rectangle {
     property <float> ky: 0;
 
     pure function clamp1(v: float) -> float { return Math.max(-1, Math.min(1, v)); }
+    changed enabled => { if !root.enabled { root.kx = 0; root.ky = 0; } }
 
     Rectangle {
         width: root.d;
@@ -118,6 +119,7 @@ component Slider inherits Rectangle {
     property <length> reach: (self.width - root.knob) / 2;
     property <float> k: 0;
     pure function clamp1(v: float) -> float { return Math.max(-1, Math.min(1, v)); }
+    changed enabled => { if !root.enabled { root.k = 0; } }
 
     Rectangle {
         height: root.knob;
@@ -188,7 +190,7 @@ component LiftColumn inherits Rectangle {
                 label: p.name;
                 enabled: p.enabled;
                 font: 14px;
-                min-width: 40px;
+                min-width: 44px;
                 clicked => { root.preset(i); }
             }
         }
@@ -225,8 +227,11 @@ export component ManualPage inherits Rectangle {
     callback jog-released();
     callback preset-pressed(int, int);
     callback suction-toggled(int);
+    callback reset-pressed();
     callback reset-confirmed();
     callback cancel-auto();
+    // A disabled TouchArea never reports the finger-up, so disarm here.
+    changed reset-enabled => { if !root.reset-enabled { root.reset-armed = false; } }
 
     // 長押し: the timer fires once after 1 s of an uninterrupted press.
     property <bool> reset-armed: false;
@@ -321,7 +326,7 @@ export component ManualPage inherits Rectangle {
                         enabled: root.reset-enabled;
                         pointer-event(e) => {
                             if e.button != PointerEventButton.left { return; }
-                            if e.kind == PointerEventKind.down { root.reset-armed = true; }
+                            if e.kind == PointerEventKind.down { root.reset-armed = true; root.reset-pressed(); }
                             else if e.kind == PointerEventKind.up || e.kind == PointerEventKind.cancel { root.reset-armed = false; }
                         }
                     }

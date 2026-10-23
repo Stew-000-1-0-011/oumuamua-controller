@@ -84,8 +84,10 @@ struct Glue {
     bounds: [f64; 4],
     /// Manual page inputs; copied into `control` by `sync_manual`.
     manual: Manual,
-    /// Requests sent from the manual page whose RESULT we still show: `(req, is_reset)`.
-    manual_reqs: Vec<(u32, bool)>,
+    /// Requests sent from the manual page whose RESULT we still show: `(req, is_reset, sent)`.
+    manual_reqs: Vec<(u32, bool, Instant)>,
+    /// When the reset button was last pressed down.
+    reset_pressed_at: Option<Instant>,
     manual_message: String,
     /// Last preset list given to the window, to avoid rebuilding the model every tick.
     presets_shown: Vec<(String, bool)>,
@@ -229,10 +231,12 @@ impl Glue {
     /// is not running something automatic.
     fn manual_allowed(&self) -> bool {
         let Some(w) = self.window.upgrade() else { return false };
-        w.get_connected()
-            && self.client.is_some()
-            && w.get_page() == 1
-            && self.model.state().is_some_and(|s| s.mode != Mode::Auto)
+        manual::motion_allowed(
+            w.get_connected(),
+            self.client.is_some(),
+            w.get_page(),
+            self.model.state().map(|s| s.mode),
+        )
     }
 
     /// Copies the manual inputs into `control` (never touching `estop`) and pushes on change.
@@ -288,7 +292,7 @@ impl Glue {
         let Some(c) = &self.client else { return };
         let req = c.next_req();
         c.send(build(req));
-        self.manual_reqs.push((req, is_reset));
+        self.manual_reqs.push((req, is_reset, Instant::now()));
         self.manual_message.clear();
     }
 
@@ -324,7 +328,16 @@ impl Glue {
         self.model.state().is_some_and(|s| s.grippers.iter().flatten().any(|g| g.moving))
     }
 
+    fn manual_reset_pressed(&mut self) {
+        self.reset_pressed_at = Some(Instant::now());
+    }
+
     fn manual_reset(&mut self) {
+        // Only a confirmation that follows a real press counts.
+        let pressed = self.reset_pressed_at.take();
+        if !pressed.is_some_and(|t| t.elapsed() <= Duration::from_millis(manual::RESET_CONFIRM_WINDOW_MS)) {
+            return;
+        }
         // The button is held for a second, during which a lift may have started to move.
         if !self.manual_allowed() || self.lift_moving() {
             return;
@@ -340,8 +353,9 @@ impl Glue {
     fn collect_manual_results(&mut self) {
         let results = &self.model.results;
         let message = &mut self.manual_message;
-        self.manual_reqs.retain(|&(req, is_reset)| {
-            let Some((_, ok, msg)) = results.iter().find(|r| r.0 == req) else { return true };
+        let keep = Duration::from_millis(manual::REQ_KEEP_MS);
+        self.manual_reqs.retain(|&(req, is_reset, sent)| {
+            let Some((_, ok, msg)) = results.iter().find(|r| r.0 == req) else { return sent.elapsed() < keep };
             if !ok {
                 *message = if msg.is_empty() { "失敗しました".to_owned() } else { msg.clone() };
             } else if is_reset {
@@ -562,6 +576,7 @@ pub fn start(window: &MainWindow) -> Rc<RefCell<GlueHandle>> {
         bounds: map::field_bounds(None),
         manual: Manual::default(),
         manual_reqs: Vec::new(),
+        reset_pressed_at: None,
         manual_message: String::new(),
         presets_shown: Vec::new(),
     }));
@@ -610,6 +625,8 @@ pub fn start(window: &MainWindow) -> Rc<RefCell<GlueHandle>> {
         window.on_manual_preset(move |side, i| g.borrow_mut().manual_preset(side, i));
         let g = glue.clone();
         window.on_manual_suction(move |side| g.borrow_mut().manual_suction(side));
+        let g = glue.clone();
+        window.on_manual_reset_pressed(move || g.borrow_mut().manual_reset_pressed());
         let g = glue.clone();
         window.on_manual_reset(move || g.borrow_mut().manual_reset());
         let g = glue.clone();
