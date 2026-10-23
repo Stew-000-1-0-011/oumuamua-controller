@@ -1,17 +1,23 @@
 //! Connects the Slint window to the link: callbacks in, a 33 ms timer out.
 
 use crate::model::{AppModel, ConnState, StopLatch};
-use crate::{Beacon, MainWindow, storage};
+use crate::map::{self, PaneState, Scene};
+use crate::{Beacon, MainWindow, WheelInfo, storage};
 use link::{Client, ControlInput, Discovery, LinkEvent};
 use proto::{Mode, Msg};
 use slint::{ComponentHandle, Model, ModelRc, SharedString, Timer, TimerMode, VecModel};
 use std::cell::RefCell;
+use std::collections::HashMap;
 use std::net::{IpAddr, SocketAddr};
 use std::rc::Rc;
 use std::sync::mpsc::Receiver;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 const TICK: Duration = Duration::from_millis(33);
+/// The map is redrawn at most this often (20 Hz).
+const MAP_INTERVAL: Duration = Duration::from_millis(50);
+/// The pane id of the output page's map.
+const OUTPUT_MAP: i32 = 0;
 const NAME_FILE: &str = "client_name";
 const TARGET_FILE: &str = "last_target";
 
@@ -68,9 +74,147 @@ struct Glue {
     notice: String,
     status: String,
     name: String,
+    /// Per-pane map views, keyed by pane id, so panes zoom and pan independently.
+    maps: HashMap<i32, PaneState>,
+    last_render: Option<Instant>,
+    /// Something the map shows changed since the last draw.
+    scene_dirty: bool,
+    was_visible: bool,
+    bounds: [f64; 4],
 }
 
 impl Glue {
+    fn scale_factor(&self) -> f32 {
+        self.window.upgrade().map_or(1.0, |w| w.window().scale_factor())
+    }
+
+    fn pane(&mut self, id: i32) -> &mut PaneState {
+        self.maps.entry(id).or_default()
+    }
+
+    fn map_geometry(&mut self, id: i32, w: f32, h: f32) {
+        let sf = self.scale_factor();
+        let bounds = self.bounds;
+        let (pw, ph) = ((w * sf).round().max(1.0) as u32, (h * sf).round().max(1.0) as u32);
+        self.pane(id).set_size(pw, ph, bounds);
+    }
+
+    fn map_panned(&mut self, id: i32, dx: f32, dy: f32) {
+        let sf = self.scale_factor();
+        self.pane(id).pan(dx * sf, dy * sf);
+    }
+
+    fn map_zoomed(&mut self, id: i32, factor: f32, x: f32, y: f32) {
+        let sf = self.scale_factor();
+        self.pane(id).zoom(factor, (x * sf, y * sf));
+    }
+
+    fn map_fit(&mut self, id: i32) {
+        let bounds = self.bounds;
+        self.pane(id).fit(bounds);
+    }
+
+    fn scene(&self, pane: &PaneState) -> Scene {
+        let mut scene = Scene { pose_drag: pane.pose_drag, ..Scene::default() };
+        if let Some(f) = self.model.field() {
+            scene.walls = f.walls.clone();
+            scene.shelf = Some(f.shelf);
+            scene.robot_radius = f.robot_radius;
+        }
+        if let Some(s) = self.model.state() {
+            scene.robot_pose = s.pose;
+            if let Some((name, _)) = &s.path
+                && let Some(pts) = self.model.path_shape(name)
+            {
+                scene.path = pts.iter().map(|&(x, y)| (f32::from(x) / 1000.0, f32::from(y) / 1000.0)).collect();
+            }
+        }
+        scene.scan = self.model.scan().to_vec();
+        scene
+    }
+
+    /// Redraws the visible map panes when something changed, at most at 20 Hz.
+    fn render_maps(&mut self, events: bool) {
+        let Some(w) = self.window.upgrade() else { return };
+        let visible = w.get_connected() && w.get_page() == 0;
+        if visible && !self.was_visible {
+            self.scene_dirty = true;
+        }
+        self.was_visible = visible;
+        if !visible {
+            return;
+        }
+        let bounds = map::field_bounds(
+            self.model.field().map_or(&[], |f| f.walls.as_slice()),
+            self.model.field().map(|f| f.shelf),
+        );
+        if bounds != self.bounds {
+            self.bounds = bounds;
+            for p in self.maps.values_mut().filter(|p| !p.user_moved) {
+                p.fit(bounds);
+            }
+        }
+        self.scene_dirty |= events;
+        let any_dirty = self.scene_dirty || self.maps.values().any(|p| p.dirty);
+        if !any_dirty || self.last_render.is_some_and(|t| t.elapsed() < MAP_INTERVAL) {
+            return;
+        }
+        let sf = w.window().scale_factor();
+        if let Some(p) = self.maps.get(&OUTPUT_MAP)
+            && p.size.0 > 0
+            && p.size.1 > 0
+        {
+            let buf = map::render(&p.view, p.size.0, p.size.1, &self.scene(p));
+            w.set_map_image(slint::Image::from_rgba8_premultiplied(buf));
+            w.set_map_cx(p.view.center.0);
+            w.set_map_cy(p.view.center.1);
+            w.set_map_scale(p.view.scale / sf);
+        }
+        self.scene_dirty = false;
+        self.last_render = Some(Instant::now());
+        for p in self.maps.values_mut() {
+            p.dirty = false;
+        }
+    }
+
+    fn refresh_band(&self, w: &MainWindow) {
+        let red = slint::Color::from_rgb_u8(0xd1, 0x34, 0x2f);
+        let Some(s) = self.model.state() else {
+            w.set_band_pose("位置 -".into());
+            w.set_band_vel("速度 -".into());
+            w.set_band_wheels(ModelRc::default());
+            w.set_band_mode("".into());
+            w.set_band_reason("".into());
+            return;
+        };
+        w.set_band_pose(match s.pose {
+            Some([x, y, yaw]) => format!("位置 x {x:.2}  y {y:.2} m   向き {:.0}°", yaw.to_degrees()),
+            None => "位置 -".to_owned(),
+        }.into());
+        w.set_band_vel(match s.vel {
+            Some([vx, vy, wz]) => format!("速度 {vx:.2}, {vy:.2} m/s   旋回 {wz:.2} rad/s"),
+            None => "速度 -".to_owned(),
+        }.into());
+        let wheels: Vec<WheelInfo> = s
+            .wheels
+            .iter()
+            .map(|wh| WheelInfo { text: format!("{:.1} V", wh.vdc).into(), ok: wh.ok })
+            .collect();
+        w.set_band_wheels(ModelRc::from(Rc::new(VecModel::from(wheels))));
+        let (mode, color) = match s.mode {
+            Mode::Manual => ("手動", slint::Color::from_rgb_u8(0x3f, 0xb9, 0x50)),
+            Mode::Auto => ("自動", slint::Color::from_rgb_u8(0x3d, 0x8b, 0xfd)),
+            Mode::Stopped => ("停止", red),
+        };
+        w.set_band_mode(mode.into());
+        w.set_band_mode_color(color);
+        w.set_band_reason(if s.mode == Mode::Stopped && !s.stop_reason.is_empty() {
+            format!("理由: {}", s.stop_reason)
+        } else {
+            String::new()
+        }.into());
+    }
+
     fn push_control(&self) {
         if let Some(c) = &self.client {
             c.set_control(self.control);
@@ -134,6 +278,7 @@ impl Glue {
                 events.push(ev);
             }
         }
+        let got_events = !events.is_empty();
         for ev in events {
             if matches!(ev, LinkEvent::Rejected { .. } | LinkEvent::Bye { .. }) {
                 // The client thread idles after these; release it so Connect starts a fresh one.
@@ -155,6 +300,7 @@ impl Glue {
             }
         }
         self.refresh();
+        self.render_maps(got_events);
     }
 
     fn refresh(&self) {
@@ -182,6 +328,7 @@ impl Glue {
         w.set_mode(mode);
         w.set_stopped(self.control.estop || mode == 2);
         w.set_notice(self.notice.as_str().into());
+        self.refresh_band(&w);
         let (status, status_color) = match &conn {
             ConnState::TakenOver(r) => (format!("別のスマホに乗っ取られました: {r}"), slint::Color::from_rgb_u8(0xd1, 0x34, 0x2f)),
             ConnState::Rejected(r) => (format!("接続できません: {r}"), slint::Color::from_rgb_u8(0xd1, 0x34, 0x2f)),
@@ -227,6 +374,11 @@ pub fn start(window: &MainWindow) -> Rc<RefCell<GlueHandle>> {
         notice: String::new(),
         status,
         name: client_name(),
+        maps: HashMap::new(),
+        last_render: None,
+        scene_dirty: true,
+        was_visible: false,
+        bounds: map::field_bounds(&[], None),
     }));
     {
         let g = glue.clone();
@@ -234,6 +386,30 @@ pub fn start(window: &MainWindow) -> Rc<RefCell<GlueHandle>> {
             let mut g = g.borrow_mut();
             g.connect(&t, takeover);
             g.refresh();
+        });
+        let g = glue.clone();
+        window.on_map_geometry(move |id, w, h| {
+            let mut g = g.borrow_mut();
+            g.map_geometry(id, w, h);
+            g.render_maps(false);
+        });
+        let g = glue.clone();
+        window.on_map_panned(move |id, dx, dy| {
+            let mut g = g.borrow_mut();
+            g.map_panned(id, dx, dy);
+            g.render_maps(false);
+        });
+        let g = glue.clone();
+        window.on_map_zoomed(move |id, f, x, y| {
+            let mut g = g.borrow_mut();
+            g.map_zoomed(id, f, x, y);
+            g.render_maps(false);
+        });
+        let g = glue.clone();
+        window.on_map_fit(move |id| {
+            let mut g = g.borrow_mut();
+            g.map_fit(id);
+            g.render_maps(false);
         });
         let g = glue.clone();
         window.on_stop_pressed(move || {

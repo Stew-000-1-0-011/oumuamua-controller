@@ -1,0 +1,174 @@
+import { Theme } from "theme.slint";
+
+component RoundButton inherits Rectangle {
+    in property <string> label;
+    callback clicked();
+    width: Theme.tap;
+    height: Theme.tap;
+    background: ta.pressed ? Theme.accent : Theme.panel-hi;
+    border-radius: 8px;
+    opacity: 0.92;
+    Text { text: root.label; color: Theme.text; font-size: 20px; horizontal-alignment: center; vertical-alignment: center; }
+    ta := TouchArea { clicked => { root.clicked(); } }
+}
+
+// A top-down map. The picture is rendered in Rust (map.rs) at the pane's physical size; Rust
+// keeps the view per `pane-id`. Gestures come out as callbacks in logical pixels:
+// one-finger drag pans, pinch / wheel / buttons zoom. With `pose-pick-enabled`, a long press
+// followed by a drag picks a pose (point = press, direction = drag) in field coordinates.
+export component MapPane inherits Rectangle {
+    in property <int> pane-id: 0;
+    in property <image> image;
+    in property <bool> pose-pick-enabled: false;
+    // The view as Rust sees it, so pose picking can convert pixels to field metres here:
+    // field point at the pane centre (m) and logical pixels per metre.
+    in property <float> view-cx: 0;
+    in property <float> view-cy: 0;
+    in property <float> view-scale: 50;
+
+    callback geometry(length, length);
+    callback panned(length, length);
+    // factor, anchor x, anchor y (logical px)
+    callback zoomed(float, length, length);
+    callback fit-pressed();
+    // x, y (m), yaw (rad)
+    callback pose-dragging(float, float, float);
+    callback pose-picked(float, float, float);
+    callback pose-cancelled();
+
+    background: #0b0e12;
+    clip: true;
+    init => { root.geometry(root.width, root.height); }
+    changed width => { root.geometry(root.width, root.height); }
+    changed height => { root.geometry(root.width, root.height); }
+
+    property <bool> pressing: false;
+    property <bool> picking: false;
+    property <bool> drifted: false;
+    property <length> start-x;
+    property <length> start-y;
+    property <length> last-x;
+    property <length> last-y;
+    property <float> last-scale: 1;
+    property <float> pick-x;
+    property <float> pick-y;
+
+    pure function field-x(px: length) -> float { return root.view-cx + ((px - root.width / 2) / 1px) / root.view-scale; }
+    pure function field-y(py: length) -> float { return root.view-cy - ((py - root.height / 2) / 1px) / root.view-scale; }
+    pure function drag-yaw(x: length, y: length) -> float {
+        return Math.atan2(-((y - root.start-y) / 1px), (x - root.start-x) / 1px) / 1rad;
+    }
+    pure function drag-length(x: length, y: length) -> length {
+        return Math.sqrt(Math.pow((x - root.start-x) / 1px, 2) + Math.pow((y - root.start-y) / 1px, 2)) * 1px;
+    }
+
+    Image {
+        width: parent.width;
+        height: parent.height;
+        source: root.image;
+        image-fit: fill;
+    }
+
+    long-press := Timer {
+        interval: 500ms;
+        running: false;
+        triggered => {
+            self.running = false;
+            if root.pressing && !root.drifted && root.pose-pick-enabled {
+                root.picking = true;
+                root.pick-x = root.field-x(root.start-x);
+                root.pick-y = root.field-y(root.start-y);
+                root.pose-dragging(root.pick-x, root.pick-y, 0);
+            }
+        }
+    }
+
+    pinch := ScaleRotateGestureHandler {
+        started => { root.last-scale = 1; }
+        updated => {
+            if root.last-scale > 0 {
+                root.zoomed(self.scale / root.last-scale, self.center.x, self.center.y);
+            }
+            root.last-scale = self.scale;
+        }
+    }
+
+    TouchArea {
+        scroll-event(e) => {
+            if e.delta-y != 0 {
+                root.zoomed(e.delta-y > 0 ? 1.15 : 1 / 1.15, self.mouse-x, self.mouse-y);
+                return accept;
+            }
+            return reject;
+        }
+        pointer-event(e) => {
+            if e.button != PointerEventButton.left && e.button != PointerEventButton.other { return; }
+            if e.kind == PointerEventKind.down {
+                root.pressing = true;
+                root.picking = false;
+                root.drifted = false;
+                root.start-x = self.mouse-x;
+                root.start-y = self.mouse-y;
+                root.last-x = self.mouse-x;
+                root.last-y = self.mouse-y;
+                long-press.running = root.pose-pick-enabled;
+            } else if e.kind == PointerEventKind.up {
+                long-press.running = false;
+                if root.picking {
+                    if root.drag-length(self.mouse-x, self.mouse-y) > 12px {
+                        root.pose-picked(root.pick-x, root.pick-y, root.drag-yaw(self.mouse-x, self.mouse-y));
+                    } else {
+                        root.pose-cancelled();
+                    }
+                }
+                root.pressing = false;
+                root.picking = false;
+            } else if e.kind == PointerEventKind.cancel {
+                long-press.running = false;
+                if root.picking { root.pose-cancelled(); }
+                root.pressing = false;
+                root.picking = false;
+            }
+        }
+        moved => {
+            if !root.pressing { return; }
+            if root.picking {
+                root.pose-dragging(root.pick-x, root.pick-y, root.drag-yaw(self.mouse-x, self.mouse-y));
+            } else if !pinch.active {
+                if root.drag-length(self.mouse-x, self.mouse-y) > 10px { root.drifted = true; long-press.running = false; }
+                root.panned(self.mouse-x - root.last-x, self.mouse-y - root.last-y);
+            }
+            root.last-x = self.mouse-x;
+            root.last-y = self.mouse-y;
+        }
+    }
+
+    VerticalLayout {
+        x: parent.width - self.width - 8px;
+        y: parent.height - self.height - 8px;
+        width: Theme.tap + 76px;
+        height: 3 * Theme.tap + 16px;
+        spacing: 8px;
+        alignment: end;
+        HorizontalLayout {
+            alignment: end;
+            RoundButton { label: "+"; clicked => { root.zoomed(1.3, root.width / 2, root.height / 2); } }
+        }
+        HorizontalLayout {
+            alignment: end;
+            RoundButton { label: "−"; clicked => { root.zoomed(1 / 1.3, root.width / 2, root.height / 2); } }
+        }
+        HorizontalLayout {
+            alignment: end;
+            Rectangle {
+                width: Theme.tap + 76px;
+                height: Theme.tap;
+                background: fit-ta.pressed ? Theme.accent : Theme.panel-hi;
+                border-radius: 8px;
+                opacity: 0.92;
+                Text { text: "全体"; color: Theme.text; font-size: Theme.font; horizontal-alignment: center; vertical-alignment: center; }
+                fit-ta := TouchArea { clicked => { root.fit-pressed(); } }
+            }
+        }
+    }
+}

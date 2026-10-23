@@ -2,11 +2,11 @@ import { Palette } from "std-widgets.slint";
 import { Theme } from "theme.slint";
 import { Strip } from "strip.slint";
 import { ConnectScreen, Beacon } from "connect.slint";
+import { OutputPage, WheelInfo } from "output.slint";
 
-export { Beacon }
+export { Beacon, WheelInfo }
 
-// Placeholder pages; Tasks 12-16 replace the bodies.
-component OutputPage inherits Rectangle { background: Theme.bg; Text { text: "出力"; color: Theme.dim; } }
+// Placeholder pages; Tasks 13-16 replace the bodies.
 component ManualPage inherits Rectangle { background: Theme.bg; Text { text: "手動"; color: Theme.dim; } }
 component AutoPage inherits Rectangle { background: Theme.bg; Text { text: "自動"; color: Theme.dim; } }
 
@@ -37,7 +37,24 @@ export component MainWindow inherits Window {
     in property <string> connect-status;
     in property <color> connect-status-color: Theme.dim;
 
+    // Output page: status band and map (the map image is rendered by map.rs).
+    in property <string> band-pose: "位置 -";
+    in property <string> band-vel: "速度 -";
+    in property <[WheelInfo]> band-wheels;
+    in property <string> band-mode;
+    in property <color> band-mode-color: Theme.dim;
+    in property <string> band-reason;
+    in property <image> map-image;
+    in property <float> map-cx;
+    in property <float> map-cy;
+    in property <float> map-scale: 50;
+
     callback connect(string, bool);
+    // Map pane 0 (output page); pane id first so more panes can share the Rust side.
+    callback map-geometry(int, length, length);
+    callback map-panned(int, length, length);
+    callback map-zoomed(int, float, length, length);
+    callback map-fit(int);
     callback stop-pressed();
     callback release-pressed();
 
@@ -60,7 +77,22 @@ export component MainWindow inherits Window {
                 connect(t, takeover) => { root.connect(t, takeover); }
             }
             if root.connected: Rectangle {
-                if root.page == 0: OutputPage { }
+                if root.page == 0: OutputPage {
+                    pose-text: root.band-pose;
+                    vel-text: root.band-vel;
+                    wheels: root.band-wheels;
+                    mode-text: root.band-mode;
+                    mode-color: root.band-mode-color;
+                    reason-text: root.band-reason;
+                    map-image: root.map-image;
+                    map-cx: root.map-cx;
+                    map-cy: root.map-cy;
+                    map-scale: root.map-scale;
+                    map-geometry(w, h) => { root.map-geometry(0, w, h); }
+                    map-panned(dx, dy) => { root.map-panned(0, dx, dy); }
+                    map-zoomed(f, x, y) => { root.map-zoomed(0, f, x, y); }
+                    map-fit => { root.map-fit(0); }
+                }
                 if root.page == 1: ManualPage { }
                 if root.page == 2: AutoPage { }
                 if root.notice != "": Rectangle {

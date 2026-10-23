@@ -1,0 +1,90 @@
+import { Theme } from "theme.slint";
+import { MapPane } from "map.slint";
+
+export struct WheelInfo { text: string, ok: bool }
+
+component Cell inherits Text {
+    color: Theme.text;
+    font-size: 15px;
+    vertical-alignment: center;
+}
+
+// Status band (position, velocity, wheel voltages, mode) over the map; the right ~45% is
+// kept free for the console (Task 15).
+export component OutputPage inherits Rectangle {
+    background: Theme.bg;
+
+    in property <string> pose-text: "位置 -";
+    in property <string> vel-text: "速度 -";
+    in property <[WheelInfo]> wheels;
+    in property <string> mode-text;
+    in property <color> mode-color: Theme.dim;
+    in property <string> reason-text;
+
+    in property <image> map-image;
+    in property <float> map-cx;
+    in property <float> map-cy;
+    in property <float> map-scale: 50;
+
+    callback map-geometry(length, length);
+    callback map-panned(length, length);
+    callback map-zoomed(float, length, length);
+    callback map-fit();
+
+    VerticalLayout {
+        Rectangle {
+            height: 72px;
+            background: Theme.panel;
+            VerticalLayout {
+                padding-left: 12px;
+                padding-right: 12px;
+                padding-top: 4px;
+                padding-bottom: 4px;
+                HorizontalLayout {
+                    spacing: 24px;
+                    Cell { text: root.pose-text; }
+                    Cell { text: root.vel-text; }
+                    Rectangle { }
+                    Cell { text: root.mode-text; color: root.mode-color; font-weight: 700; }
+                }
+                HorizontalLayout {
+                    spacing: 20px;
+                    Cell { text: "車輪電圧"; color: Theme.dim; }
+                    for w[i] in root.wheels: Cell {
+                        text: "\{i + 1}: \{w.text}";
+                        color: w.ok ? Theme.text : Theme.danger;
+                        font-weight: w.ok ? 400 : 700;
+                    }
+                    Rectangle { }
+                    Cell { text: root.reason-text; color: Theme.warn; }
+                }
+            }
+        }
+        Rectangle {
+            // Fixed split (not stretch factors): the image's own size must not widen the map.
+            MapPane {
+                x: 0;
+                y: 0;
+                width: parent.width * 0.55;
+                height: parent.height;
+                pane-id: 0;
+                image: root.map-image;
+                view-cx: root.map-cx;
+                view-cy: root.map-cy;
+                view-scale: root.map-scale;
+                geometry(w, h) => { root.map-geometry(w, h); }
+                panned(dx, dy) => { root.map-panned(dx, dy); }
+                zoomed(f, x, y) => { root.map-zoomed(f, x, y); }
+                fit-pressed => { root.map-fit(); }
+            }
+            // Console goes here (Task 15): the right 45%.
+            Rectangle {
+                x: parent.width * 0.55;
+                y: 0;
+                width: parent.width * 0.45;
+                height: parent.height;
+                background: Theme.panel;
+            }
+        }
+    }
+}
