@@ -1839,12 +1839,14 @@ fn send_mouse_event_to_item(
         InputEventFilterResult::DelayForwarding(duration) => {
             let timer = WindowInner::from_pub(window_adapter.window()).context().new_timer();
             let w = Rc::downgrade(window_adapter);
+            // MULTITOUCH: the delayed event belongs to the state of the finger that started it.
+            let finger = mouse_event.touch_finger_id();
             timer.start(
                 crate::timers::TimerMode::SingleShot,
                 Duration::from_millis(duration),
                 move || {
                     if let Some(w) = w.upgrade() {
-                        WindowInner::from_pub(w.window()).process_delayed_event();
+                        WindowInner::from_pub(w.window()).process_delayed_event_for_finger(finger);
                     }
                 },
             );
@@ -2211,6 +2213,34 @@ impl TouchState {
         self.gesture_finger_ids().is_some_and(|(a, b)| id == a || id == b)
     }
 
+    // MULTITOUCH: queries used by `WindowInner::route_touch` to decide, per finger, whether
+    // an event belongs to the primary/pinch state machine, a secondary finger or is ignored.
+
+    /// Whether `id` is tracked by this state machine (primary finger or pinch partner).
+    pub(crate) fn tracks(&self, id: i32) -> bool {
+        self.active_touches.get(id).is_some()
+    }
+
+    /// Whether no finger is tracked by this state machine.
+    pub(crate) fn is_empty(&self) -> bool {
+        self.active_touches.len() == 0
+    }
+
+    /// If exactly one finger is tracked and no gesture is running, its current position.
+    pub(crate) fn lone_primary_position(&self) -> Option<LogicalPoint> {
+        if self.active_touches.len() == 1 && matches!(self.gesture_state, GestureRecognitionState::Idle)
+        {
+            self.primary_touch_id.and_then(|id| self.active_touches.get(id)).map(|tp| tp.position)
+        } else {
+            None
+        }
+    }
+
+    /// True while the primary finger is acting as a plain mouse (no two-finger gesture).
+    pub(crate) fn primary_is_plain_finger(&self) -> bool {
+        self.primary_touch_id.is_some() && matches!(self.gesture_state, GestureRecognitionState::Idle)
+    }
+
     /// Run the touch state machine for a single event and return the
     /// [`MouseEvent`]s to dispatch.
     ///
@@ -2456,6 +2486,135 @@ impl TouchState {
             }
             _ => {}
         }
+    }
+}
+
+// MULTITOUCH: per-finger dispatch helpers (see third_party/i-slint-core/MULTITOUCH.md).
+
+/// Items that intercept input for everything below them: while a finger is pressed anywhere inside
+/// one of these, no other finger may start a gesture inside it.
+fn multitouch_is_interceptor(item: &ItemRc) -> bool {
+    item.downcast::<crate::items::Flickable>().is_some_and(|f| f.as_pin_ref().interactive())
+        || item
+            .downcast::<crate::items::SwipeGestureHandler>()
+            .is_some_and(|s| s.as_pin_ref().enabled())
+        || multitouch_is_gesture_handler(item)
+}
+
+/// A `ScaleRotateGestureHandler` (the only place where two fingers may form a pinch).
+pub(crate) fn multitouch_is_gesture_handler(item: &ItemRc) -> bool {
+    item.downcast::<crate::items::ScaleRotateGestureHandler>()
+        .is_some_and(|s| s.as_pin_ref().enabled())
+}
+
+/// A `DragArea`: drag and drop is a primary-finger-only feature.
+pub(crate) fn multitouch_is_drag_area(item: &ItemRc) -> bool {
+    item.downcast::<crate::items::DragArea>().is_some()
+}
+
+/// Items that react to a press themselves (the "owner" of a finger).
+fn multitouch_is_handler(item: &ItemRc) -> bool {
+    multitouch_is_interceptor(item)
+        || item.downcast::<crate::items::TouchArea>().is_some_and(|t| t.as_pin_ref().enabled())
+        || item.downcast::<crate::items::TextInput>().is_some_and(|t| t.as_pin_ref().enabled())
+        || item
+            .downcast::<crate::items::WindowMoveArea>()
+            .is_some_and(|t| t.as_pin_ref().enabled())
+        || multitouch_is_drag_area(item)
+}
+
+/// Side-effect free hit test used before a finger is pressed.
+///
+/// Returns the items "owned" by a press at `pos` (window coordinates): the frontmost handler
+/// under the point (children are tried before their parent, front to back, like
+/// [`send_mouse_event_to_item`]) plus every intercepting ancestor on the way to it. The result is
+/// empty if the press would hit nothing interactive.
+///
+/// This is a structural approximation of the real dispatch: it does not call the items' event
+/// filters (those are stateful), it decides by item type and geometry only.
+pub(crate) fn multitouch_hit_claims(
+    root: ItemRc,
+    pos: LogicalPoint,
+    window_adapter: &Rc<dyn WindowAdapter>,
+) -> Vec<ItemRc> {
+    let mut out = Vec::new();
+    multitouch_collect_claims(&root, pos, window_adapter, &mut out);
+    out
+}
+
+fn multitouch_collect_claims(
+    item_rc: &ItemRc,
+    pos: LogicalPoint,
+    window_adapter: &Rc<dyn WindowAdapter>,
+    out: &mut Vec<ItemRc>,
+) -> bool {
+    let geom = item_rc.geometry();
+    let inside = geom.contains(pos);
+    if !inside && item_rc.borrow().as_ref().clips_children() {
+        return false;
+    }
+    let mut local = pos - geom.origin.to_vector();
+    if window_adapter.renderer().supports_transformations()
+        && let Some(inverse_transform) = item_rc.inverse_children_transform()
+    {
+        local = inverse_transform.transform_point(local.cast()).cast();
+    }
+
+    let mut found = false;
+    let mut visitor = |component: &ItemTreeRc, index: u32, _: Pin<ItemRef>| -> VisitChildrenResult {
+        let child = ItemRc::new(component.clone(), index);
+        if multitouch_collect_claims(&child, local, window_adapter, out) {
+            found = true;
+            VisitChildrenResult::abort(index, 0)
+        } else {
+            VisitChildrenResult::CONTINUE
+        }
+    };
+    vtable::new_vref!(let mut visitor : VRefMut<crate::item_tree::ItemVisitorVTable> for crate::item_tree::ItemVisitor = &mut visitor);
+    vtable::VRc::borrow_pin(item_rc.item_tree()).as_ref().visit_children_item(
+        item_rc.index() as isize,
+        crate::item_tree::TraversalOrder::FrontToBack,
+        visitor,
+    );
+
+    if found {
+        if inside && multitouch_is_interceptor(item_rc) {
+            out.push(item_rc.clone());
+        }
+        return true;
+    }
+    if inside && multitouch_is_handler(item_rc) {
+        out.push(item_rc.clone());
+        return true;
+    }
+    false
+}
+
+/// The items a finger currently owns, derived from the dispatch state it left behind.
+///
+/// With `hover_counts` false the state only counts while it holds a grab or a delayed press
+/// (so a hovering mouse does not own the item below it).
+pub(crate) fn multitouch_state_claims(state: &MouseInputState, hover_counts: bool) -> Vec<ItemRc> {
+    let mut out = Vec::new();
+    if !(hover_counts || state.grabbed || state.delayed.is_some()) {
+        return out;
+    }
+    let last = state.item_stack.len().wrapping_sub(1);
+    for (idx, (weak, _)) in state.item_stack.iter().enumerate() {
+        let Some(item) = weak.upgrade() else { continue };
+        if multitouch_is_interceptor(&item) || (idx == last && multitouch_is_handler(&item)) {
+            out.push(item);
+        }
+    }
+    out
+}
+
+impl MouseInputState {
+    // MULTITOUCH: send `Exit` to everything this (secondary finger) state still points at, so
+    // pressed items reset. Used when the window is hidden while secondary fingers are down.
+    pub(crate) fn multitouch_exit_all(self, window_adapter: &Rc<dyn WindowAdapter>) {
+        let mut empty = MouseInputState::default();
+        send_exit_events(&self, &mut empty, None, window_adapter);
     }
 }
 
