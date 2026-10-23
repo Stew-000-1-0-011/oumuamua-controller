@@ -7,12 +7,13 @@ export struct WheelInfo { text: string, ok: bool }
 
 component Cell inherits Text {
     color: Theme.text;
-    font-size: 15px;
+    font-size: 14px;
+    overflow: elide;
     vertical-alignment: center;
 }
 
-// Status band (position, velocity, wheel voltages, mode) over the map; the right ~45% is
-// kept free for the console (Task 15).
+// Status band (one line: position, velocity, wheel voltages, mode), the map on the left and
+// the console on the right. With the keyboard up the console covers the whole screen.
 export component OutputScreen inherits Rectangle {
     background: Theme.bg;
     init => { ScreenState.output-active = root.visible; }
@@ -26,7 +27,7 @@ export component OutputScreen inherits Rectangle {
     in property <string> reason-text;
     // Connected to the in-app demo robot.
     in property <bool> demo;
-    // Window height; the keyboard takes about 40% of it.
+    // Window height; the keyboard takes about 55% of it (keys stay at least 32px).
     in property <length> window-height: 640px;
 
     in property <image> map-image;
@@ -49,108 +50,121 @@ export component OutputScreen inherits Rectangle {
     callback pose-confirm();
     callback pose-quit();
 
-    VerticalLayout {
-        Rectangle {
-            height: 72px;
-            background: Theme.panel;
+    // The console takes the whole screen while the keyboard is up (the map is hidden), except
+    // while a pose is being picked on the map.
+    property <bool> console-wide: con.keyboard-visible && !root.pose-pick;
+    property <length> map-w: root.width * 0.55;
+    property <length> body-h: root.height - Theme.band-h;
+
+    // Status band: one line; what does not fit is elided.
+    Rectangle {
+        x: 0;
+        y: 0;
+        width: root.width;
+        height: Theme.band-h;
+        background: Theme.panel;
+        HorizontalLayout {
+            padding-left: 10px;
+            padding-right: 10px;
+            spacing: 12px;
+            Cell { text: root.pose-text; }
+            Cell { text: root.vel-text; }
+            HorizontalLayout {
+                spacing: 8px;
+                Cell { text: "車輪"; color: Theme.dim; horizontal-stretch: 0; }
+                for w[i] in root.wheels: Cell {
+                    text: w.text;
+                    color: w.ok ? Theme.text : Theme.danger;
+                    font-weight: w.ok ? 400 : 700;
+                }
+            }
+            Cell { text: root.reason-text; color: Theme.warn; }
+            if root.demo: Rectangle {
+                width: 44px;
+                height: 20px;
+                y: (parent.height - self.height) / 2;
+                background: Theme.demo;
+                border-radius: 4px;
+                Text { text: "デモ"; color: #000000; font-size: 13px; font-weight: 700; horizontal-alignment: center; vertical-alignment: center; }
+            }
+            Cell { text: root.mode-text; color: root.mode-color; font-weight: 700; horizontal-stretch: 0; }
+        }
+    }
+
+    // Map (left), with the pose-pick banners over it.
+    Rectangle {
+        x: 0;
+        y: Theme.band-h;
+        width: root.map-w;
+        height: root.body-h;
+        visible: !root.console-wide;
+        MapPane {
+            x: 0;
+            y: 0;
+            width: parent.width;
+            height: parent.height;
+            pane-id: 0;
+            pose-pick-enabled: root.pose-pick && !root.confirm-active;
+            image: root.map-image;
+            view-cx: root.map-cx;
+            view-cy: root.map-cy;
+            view-scale: root.map-scale;
+            geometry(w, h) => { root.map-geometry(w, h); }
+            panned(dx, dy) => { root.map-panned(dx, dy); }
+            zoomed(f, x, y) => { root.map-zoomed(f, x, y); }
+            fit-pressed => { root.map-fit(); }
+            pose-dragging(x, y, yaw) => { root.pose-dragging(x, y, yaw); }
+            pose-picked(x, y, yaw) => { root.pose-picked(x, y, yaw); }
+            pose-cancelled => { root.pose-cancelled(); }
+        }
+        if root.pose-pick && !root.confirm-active: Rectangle {
+            x: 8px;
+            y: 8px;
+            width: parent.width - 16px;
+            height: 52px;
+            background: #12161cf0;
+            border-radius: 8px;
+            border-width: 2px;
+            border-color: Theme.accent;
+            TouchArea { }
+            HorizontalLayout {
+                padding: 4px;
+                padding-left: 10px;
+                spacing: 8px;
+                Text { text: "長押しして向きへドラッグ"; color: Theme.text; font-size: 16px; font-weight: 700; vertical-alignment: center; overflow: elide; }
+                Btn { label: "やめる"; min-width: 80px; max-width: 96px; clicked => { root.pose-quit(); } }
+            }
+        }
+        if root.pose-pick && root.confirm-active: Rectangle {
+            x: 8px;
+            y: 8px;
+            width: parent.width - 16px;
+            height: 100px;
+            background: #12161cf0;
+            border-radius: 8px;
+            border-width: 2px;
+            border-color: Theme.accent;
+            TouchArea { }
             VerticalLayout {
-                padding-left: 12px;
-                padding-right: 12px;
-                padding-top: 4px;
-                padding-bottom: 4px;
+                padding: 6px;
+                spacing: 4px;
+                Text { text: root.confirm-text; color: Theme.text; font-size: 15px; font-weight: 700; horizontal-alignment: center; vertical-alignment: center; overflow: elide; }
                 HorizontalLayout {
-                    spacing: 24px;
-                    Cell { text: root.pose-text; }
-                    Cell { text: root.vel-text; }
-                    Rectangle { }
-                    if root.demo: Rectangle {
-                        width: 80px;
-                        background: Theme.demo;
-                        border-radius: 6px;
-                        Text { text: "デモ"; color: #000000; font-size: 16px; font-weight: 700; horizontal-alignment: center; vertical-alignment: center; }
-                    }
-                    Cell { text: root.mode-text; color: root.mode-color; font-weight: 700; }
-                }
-                HorizontalLayout {
-                    spacing: 20px;
-                    Cell { text: "車輪電圧"; color: Theme.dim; }
-                    for w[i] in root.wheels: Cell {
-                        text: "\{i + 1}: \{w.text}";
-                        color: w.ok ? Theme.text : Theme.danger;
-                        font-weight: w.ok ? 400 : 700;
-                    }
-                    Rectangle { }
-                    Cell { text: root.reason-text; color: Theme.warn; }
-                }
-            }
-        }
-        Rectangle {
-            // Fixed split (not stretch factors): the image's own size must not widen the map.
-            MapPane {
-                x: 0;
-                y: 0;
-                width: parent.width * 0.55;
-                height: parent.height;
-                pane-id: 0;
-                pose-pick-enabled: root.pose-pick && !root.confirm-active;
-                image: root.map-image;
-                view-cx: root.map-cx;
-                view-cy: root.map-cy;
-                view-scale: root.map-scale;
-                geometry(w, h) => { root.map-geometry(w, h); }
-                panned(dx, dy) => { root.map-panned(dx, dy); }
-                zoomed(f, x, y) => { root.map-zoomed(f, x, y); }
-                fit-pressed => { root.map-fit(); }
-                pose-dragging(x, y, yaw) => { root.pose-dragging(x, y, yaw); }
-                pose-picked(x, y, yaw) => { root.pose-picked(x, y, yaw); }
-                pose-cancelled => { root.pose-cancelled(); }
-            }
-            if root.pose-pick && !root.confirm-active: Rectangle {
-                x: 8px;
-                y: 8px;
-                width: parent.width * 0.55 - 16px;
-                height: 52px;
-                background: #12161cf0;
-                border-radius: 8px;
-                border-width: 2px;
-                border-color: Theme.accent;
-                TouchArea { }
-                HorizontalLayout {
-                    padding: 4px;
-                    padding-left: 10px;
                     spacing: 8px;
-                    Text { text: "長押しして向きへドラッグ"; color: Theme.text; font-size: 16px; font-weight: 700; vertical-alignment: center; overflow: elide; }
-                    Btn { label: "やめる"; min-width: 80px; max-width: 96px; clicked => { root.pose-quit(); } }
+                    Btn { label: "決定"; active: true; tint: Theme.ok; clicked => { root.pose-confirm(); } }
+                    Btn { label: "やめる"; clicked => { root.pose-quit(); } }
                 }
-            }
-            if root.pose-pick && root.confirm-active: Rectangle {
-                x: 8px;
-                y: 8px;
-                width: parent.width * 0.55 - 16px;
-                height: 100px;
-                background: #12161cf0;
-                border-radius: 8px;
-                border-width: 2px;
-                border-color: Theme.accent;
-                TouchArea { }
-                VerticalLayout {
-                    padding: 6px;
-                    spacing: 4px;
-                    Text { text: root.confirm-text; color: Theme.text; font-size: 15px; font-weight: 700; horizontal-alignment: center; vertical-alignment: center; overflow: elide; }
-                    HorizontalLayout {
-                        spacing: 8px;
-                        Btn { label: "決定"; active: true; tint: Theme.ok; clicked => { root.pose-confirm(); } }
-                        Btn { label: "やめる"; clicked => { root.pose-quit(); } }
-                    }
-                }
-            }
-            ConsolePanel {
-                x: parent.width * 0.55;
-                y: 0;
-                width: parent.width * 0.45;
-                height: parent.height;
-                kbd-height: max(root.window-height * 0.4, 240px);
             }
         }
+    }
+
+    con := ConsolePanel {
+        x: root.console-wide ? 0px : root.map-w;
+        y: root.console-wide ? 0px : Theme.band-h;
+        width: root.console-wide ? root.width : root.width - root.map-w;
+        height: root.console-wide ? root.height : root.body-h;
+        kbd-height: max(root.window-height * 0.55, 206px);
+        // Little room left above the keyboard: drop the quick-command row.
+        compact: self.height - self.kbd-height < 230px;
     }
 }

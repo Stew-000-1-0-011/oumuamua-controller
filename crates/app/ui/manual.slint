@@ -270,15 +270,20 @@ export component ManualPanel inherits Rectangle {
     property <length> margin: 8px;
     property <length> stick-d: min(max(root.height * 0.42, 156px), 240px);
     property <length> slider-w: min(max(root.width * 0.34, 260px), 420px);
-    property <length> group-w: min(520px, root.width - 2 * root.margin);
+    // Below the status band (it stays readable).
+    property <length> top-y: Theme.band-h + 4px;
+    // Not enough height for the group above the stick: the group moves right of the stick.
+    property <bool> beside-stick: root.top-y + 188px + 4px > root.height - root.margin - root.stick-d;
+    property <length> group-w: min(520px, root.width - 2 * root.margin - (root.beside-stick ? root.stick-d + root.margin : 0px));
+    property <length> group-x: root.beside-stick ? root.width - root.margin - root.group-w : (root.width - root.group-w) / 2;
 
     // Swallows every touch that no control takes, so nothing reaches the output screen below.
     TouchArea { }
 
     // Top centre: speed level, frame, both, reset, and the two lifts.
     VerticalLayout {
-        x: (root.width - root.group-w) / 2;
-        y: root.margin;
+        x: root.group-x;
+        y: root.top-y;
         width: root.group-w;
         spacing: 4px;
         Plate {

@@ -30,7 +30,13 @@ export component MainWindow inherits Window {
     property <bool> confirm-leave: false;
     // 地図で姿勢を指定: the output map picks a pose by long press and drag (page 0 only).
     in-out property <bool> pose-pick: false;
-    changed connected => { if !root.connected { root.confirm-leave = false; root.pose-pick = false; } }
+    // Losing the connection ends a pose pick too: glue drops its pending pose / drag.
+    changed connected => {
+        if !root.connected {
+            root.confirm-leave = false;
+            if root.pose-pick { root.pose-pick = false; root.auto-pose-cancelled(); }
+        }
+    }
     // Leaving the output screen ends the pose pick.
     changed page => { if root.page != 0 && root.pose-pick { root.pose-pick = false; root.auto-pose-cancelled(); } }
     // Strip: link status text/colour, rtt in ms (-1 unknown), stop latch ("解除" shown).

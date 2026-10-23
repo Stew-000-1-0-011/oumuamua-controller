@@ -10,8 +10,8 @@ export global Theme {
     out property <length> strip-width: 84px;
     out property <color> bg: #12161c;
     out property <color> panel: #1c222b;
-    // Semi-transparent plate for overlays (the map shows through).
-    out property <color> plate: #232b36cc;
+    // Plate for overlays: ~0.9 alpha, so the map shows faintly through but its text does not ghost.
+    out property <color> plate: #232b36e6;
     out property <color> panel-hi: #2a3340;
     out property <color> text: #e8edf3;
     out property <color> dim: #8d99a8;
@@ -21,4 +21,6 @@ export global Theme {
     out property <color> danger: #d1342f;
     out property <color> demo: #e056fd;
     out property <length> font: 16px;
+    // Height of the one-line status band at the top of the output screen.
+    out property <length> band-h: 32px;
 }

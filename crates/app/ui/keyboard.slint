@@ -16,7 +16,7 @@ component Key inherits Rectangle {
     property <bool> hidden: !ScreenState.output-active;
 
     horizontal-stretch: root.weight * 100;
-    min-height: 28px;
+    min-height: 32px;
     border-radius: 5px;
     border-width: root.state == 1 ? 2px : 0px;
     border-color: Theme.accent;
@@ -66,8 +66,8 @@ export component Keyboard inherits Rectangle {
     background: #0e1217;
 
     VerticalLayout {
-        padding: 4px;
-        spacing: 3px;
+        padding: 2px;
+        spacing: 2px;
         HorizontalLayout {
             spacing: 3px;
             Key { cap: "Esc"; font: 14px; fire(c) => { root.key(c); } }

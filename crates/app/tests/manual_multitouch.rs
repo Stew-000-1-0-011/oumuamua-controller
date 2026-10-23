@@ -11,6 +11,10 @@ use i_slint_core::platform::{InternalEvent, WindowEvent};
 use link::ControlInput;
 use slint::ComponentHandle;
 
+// The measured coordinates below depend on ManualPanel's layout in a 1000x500 host (stick
+// bottom left, rotation slider bottom right, lift groups top centre, starting below the 32px
+// status band, so the jog buttons sit at y=151); re-measure after
+// changing manual.slint.
 slint::slint! {
     import { ManualPanel } from "../ui/manual.slint";
     export component Host inherits Window {
@@ -94,16 +98,16 @@ fn jog_release_is_per_side() {
     };
 
     // Finger 0 on left 上, finger 1 on right 下.
-    touch(w, 0, 265., 123., Started);
-    touch(w, 1, 505., 123., Started);
+    touch(w, 0, 265., 151., Started);
+    touch(w, 1, 505., 151., Started);
     assert_eq!(read(), (1, -1));
-    touch(w, 0, 265., 123., Ended);
+    touch(w, 0, 265., 151., Ended);
     assert_eq!(read(), (0, -1), "right keeps jogging");
-    touch(w, 0, 265., 123., Started);
+    touch(w, 0, 265., 151., Started);
     assert_eq!(read(), (1, -1));
-    touch(w, 1, 505., 123., Ended);
+    touch(w, 1, 505., 151., Ended);
     assert_eq!(read(), (1, 0), "left keeps jogging");
-    touch(w, 0, 265., 123., Ended);
+    touch(w, 0, 265., 151., Ended);
     assert_eq!(read(), (0, 0));
 }
 
@@ -134,20 +138,20 @@ fn jog_survives_toggling_both_mid_hold() {
 
     host.set_both(true);
     settle();
-    touch(w, 0, 265., 123., Started);
+    touch(w, 0, 265., 151., Started);
     assert_eq!(read(), (1, 1));
     // 両方 turned off while the finger is down (set like the 両方 button does).
     host.set_both(false);
     settle();
     assert_eq!(read(), (0, 0), "toggling 両方 drops held jogs");
-    touch(w, 0, 265., 123., Ended);
+    touch(w, 0, 265., 151., Ended);
     assert_eq!(read(), (0, 0));
     // And the other way round.
-    touch(w, 0, 265., 123., Started);
+    touch(w, 0, 265., 151., Started);
     assert_eq!(read(), (1, 0));
     host.set_both(true);
     settle();
-    touch(w, 0, 265., 123., Ended);
+    touch(w, 0, 265., 151., Ended);
     assert_eq!(read(), (0, 0), "no side is left jogging");
 }
 
@@ -168,12 +172,12 @@ fn two_fingers_on_one_side_share_it() {
         (c.jog_left, c.jog_right)
     };
     // Left 上 and left 下: the later press wins, and lifting either stops that side (intended).
-    touch(w, 0, 265., 123., Started);
-    touch(w, 1, 315., 123., Started);
+    touch(w, 0, 265., 151., Started);
+    touch(w, 1, 315., 151., Started);
     assert_eq!(read(), (-1, 0));
-    touch(w, 1, 315., 123., Ended);
+    touch(w, 1, 315., 151., Ended);
     assert_eq!(read(), (0, 0));
-    touch(w, 0, 265., 123., Ended);
+    touch(w, 0, 265., 151., Ended);
     assert_eq!(read(), (0, 0));
 }
 
@@ -205,13 +209,13 @@ fn cancel_of_all_fingers_zeroes_everything_and_ids_are_reusable() {
     let w = host.window();
     touch(w, 0, 113., 330., Started);
     touch(w, 1, 900., 458., Started);
-    touch(w, 2, 265., 123., Started);
+    touch(w, 2, 265., 151., Started);
     let c = read_all(&manual);
     assert!(c.vx > 0.0 && c.wz < 0.0 && c.jog_left == 1, "{c:?}");
 
     touch(w, 0, 113., 330., Cancelled);
     touch(w, 1, 900., 458., Cancelled);
-    touch(w, 2, 265., 123., Cancelled);
+    touch(w, 2, 265., 151., Cancelled);
     let c = read_all(&manual);
     assert_eq!((c.vx, c.vy, c.wz, c.jog_left, c.jog_right), (0.0, 0.0, 0.0, 0, 0), "{c:?}");
 

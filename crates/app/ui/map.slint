@@ -91,55 +91,56 @@ export component MapPane inherits Rectangle {
             }
             root.last-scale = self.scale;
         }
-    }
-
-    TouchArea {
-        scroll-event(e) => {
-            if e.delta-y != 0 {
-                root.zoomed(e.delta-y > 0 ? 1.15 : 1 / 1.15, self.mouse-x, self.mouse-y);
-                return accept;
+        // The pan / pick area is inside the handler: only an ancestor of the touched item can
+        // turn two fingers into a pinch.
+        TouchArea {
+            scroll-event(e) => {
+                if e.delta-y != 0 {
+                    root.zoomed(e.delta-y > 0 ? 1.15 : 1 / 1.15, self.mouse-x, self.mouse-y);
+                    return accept;
+                }
+                return reject;
             }
-            return reject;
-        }
-        pointer-event(e) => {
-            if e.button != PointerEventButton.left && e.button != PointerEventButton.other { return; }
-            if e.kind == PointerEventKind.down {
-                root.pressing = true;
-                root.picking = false;
-                root.drifted = false;
-                root.start-x = self.mouse-x;
-                root.start-y = self.mouse-y;
+            pointer-event(e) => {
+                if e.button != PointerEventButton.left && e.button != PointerEventButton.other { return; }
+                if e.kind == PointerEventKind.down {
+                    root.pressing = true;
+                    root.picking = false;
+                    root.drifted = false;
+                    root.start-x = self.mouse-x;
+                    root.start-y = self.mouse-y;
+                    root.last-x = self.mouse-x;
+                    root.last-y = self.mouse-y;
+                    long-press.running = root.pose-pick-enabled;
+                } else if e.kind == PointerEventKind.up {
+                    long-press.running = false;
+                    if root.picking {
+                        if root.drag-length(self.mouse-x, self.mouse-y) > 12px {
+                            root.pose-picked(root.pick-x, root.pick-y, root.drag-yaw(self.mouse-x, self.mouse-y));
+                        } else {
+                            root.pose-cancelled();
+                        }
+                    }
+                    root.pressing = false;
+                    root.picking = false;
+                } else if e.kind == PointerEventKind.cancel {
+                    long-press.running = false;
+                    if root.picking { root.pose-cancelled(); }
+                    root.pressing = false;
+                    root.picking = false;
+                }
+            }
+            moved => {
+                if !root.pressing { return; }
+                if root.picking {
+                    root.pose-dragging(root.pick-x, root.pick-y, root.drag-yaw(self.mouse-x, self.mouse-y));
+                } else if !pinch.active {
+                    if root.drag-length(self.mouse-x, self.mouse-y) > 10px { root.drifted = true; long-press.running = false; }
+                    root.panned(self.mouse-x - root.last-x, self.mouse-y - root.last-y);
+                }
                 root.last-x = self.mouse-x;
                 root.last-y = self.mouse-y;
-                long-press.running = root.pose-pick-enabled;
-            } else if e.kind == PointerEventKind.up {
-                long-press.running = false;
-                if root.picking {
-                    if root.drag-length(self.mouse-x, self.mouse-y) > 12px {
-                        root.pose-picked(root.pick-x, root.pick-y, root.drag-yaw(self.mouse-x, self.mouse-y));
-                    } else {
-                        root.pose-cancelled();
-                    }
-                }
-                root.pressing = false;
-                root.picking = false;
-            } else if e.kind == PointerEventKind.cancel {
-                long-press.running = false;
-                if root.picking { root.pose-cancelled(); }
-                root.pressing = false;
-                root.picking = false;
             }
-        }
-        moved => {
-            if !root.pressing { return; }
-            if root.picking {
-                root.pose-dragging(root.pick-x, root.pick-y, root.drag-yaw(self.mouse-x, self.mouse-y));
-            } else if !pinch.active {
-                if root.drag-length(self.mouse-x, self.mouse-y) > 10px { root.drifted = true; long-press.running = false; }
-                root.panned(self.mouse-x - root.last-x, self.mouse-y - root.last-y);
-            }
-            root.last-x = self.mouse-x;
-            root.last-y = self.mouse-y;
         }
     }
 

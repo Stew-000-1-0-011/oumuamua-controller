@@ -100,6 +100,9 @@ export component AutoPanel inherits Rectangle {
 
     property <length> margin: 8px;
     property <length> row-h: 44px;
+    // Below the status band (it stays readable).
+    property <length> top-y: Theme.band-h + 4px;
+    property <length> side-w: 240px;
 
     // Swallows every touch that no control takes, so nothing reaches the output screen below.
     TouchArea { }
@@ -107,11 +110,11 @@ export component AutoPanel inherits Rectangle {
     // Top line: the running task and its step, or why nothing can be started; last result.
     Rectangle {
         x: root.margin;
-        y: root.margin;
-        width: root.width - 2 * root.margin;
+        y: root.top-y;
+        width: root.width - root.side-w - 3 * root.margin;
         height: 28px;
         border-radius: 10px;
-        background: root.task-active ? Theme.accent.darker(0.5).with-alpha(0.8) : Theme.plate;
+        background: root.task-active ? Theme.accent.darker(0.5).with-alpha(0.9) : Theme.plate;
         HorizontalLayout {
             padding-left: 10px;
             padding-right: 10px;
@@ -138,12 +141,12 @@ export component AutoPanel inherits Rectangle {
     // 回収 (left) and what the robot remembers.
     VerticalLayout {
         x: root.margin;
-        y: root.margin + 28px + 4px;
+        y: root.top-y + 28px + 4px;
         width: 300px;
         spacing: 4px;
         Panel {
             title: "回収 (0 が外周壁の側)";
-            height: 113px;
+            height: 118px;
             HorizontalLayout {
                 height: root.row-h;
                 spacing: 4px;
@@ -169,7 +172,7 @@ export component AutoPanel inherits Rectangle {
             }
         }
         Rectangle {
-            height: 90px;
+            height: 64px;
             background: Theme.plate;
             border-radius: 10px;
             border-width: 1px;
@@ -215,9 +218,9 @@ export component AutoPanel inherits Rectangle {
     // 配置 (right)
     Panel {
         x: root.width - root.margin - self.width;
-        y: root.margin + 28px + 4px;
-        width: 240px;
-        height: 207px;
+        y: root.top-y;
+        width: root.side-w;
+        height: 212px;
         title: "配置 (列-段)";
         note: !root.hold-left && !root.hold-right ? "ブロックなし" : root.place-warning;
         for r in root.rows: HorizontalLayout {
