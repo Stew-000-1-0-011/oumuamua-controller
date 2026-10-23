@@ -96,11 +96,17 @@ class Phone:
         self.sock.close()
 
 
+class BrokenSnapshotIo(FakeRosIo):
+    def snapshot(self):
+        raise RuntimeError("boom")
+
+
 @pytest.fixture
-def env(tmp_path):
-    io = FakeRosIo()
+def env(tmp_path, request):
+    io = getattr(request, "param", FakeRosIo)()
     srv = BridgeServer("oum", io, dict(CONFIG), tmp_path, port=0, beacon_port=0,
-                       beacon_addr="127.0.0.1")
+                       beacon_addr="127.0.0.1",
+                       operator_timeout_s=getattr(request.module, "OP_TIMEOUT", 5.0))
     srv.start()
     phones = []
 
@@ -224,7 +230,7 @@ def test_reliable_shell_roundtrip(env):
     assert p.wait(lambda: [r for r in p.rels(P.RESULT) if r[1] == 1])[-1][2] is True
     p.request(P.SHELL_INPUT, "t1", b"echo hi\n")
     assert p.wait(lambda: b"hi" in b"".join(
-        m[2] for m in p.rels(P.SHELL_OUTPUT) if True)) 
+        m[2] for m in p.rels(P.SHELL_OUTPUT)))
     p.request(P.SHELL_CLOSE, "t1")
     closed = p.wait(lambda: p.rels(P.SHELL_CLOSED))
     assert closed[-1][1:] == ["t1", "closed"] and len(closed) == 1
@@ -295,3 +301,53 @@ def test_output_flood_does_not_delay_state(env):
     dt = time.monotonic() - t0
     got = len(p.kinds(P.STATE)) - n0
     assert got >= 0.8 * 20 * dt, (got, dt)
+
+
+@pytest.mark.parametrize("env", [BrokenSnapshotIo], indirect=True)
+def test_deadman_survives_snapshot_failure(env):
+    io, srv, mk = env
+    p = mk()
+    p.connect()
+    p.control()
+    p.request(P.RELEASE_STOP)
+    p.pump(0.1)
+    assert srv.sup.mode == 0
+    n = len(io.calls)
+    p.pump(0.6)
+    assert srv.sup.mode == 2
+    assert sum(1 for c in io.calls[n:] if c == ("cmd_vel", 0.0, 0.0, 0.0)) >= 5
+
+
+def test_stale_operator_expires(env):
+    io, srv, mk = env
+    srv._operator_timeout = 0.3
+    a = mk(name="a", session=11)
+    a.connect()
+    b = mk(name="b", session=22)
+    assert b.connect()[3] is False  # still fresh
+    a.pump(0.5)
+    w = b.connect()
+    assert w[3] is True and w[1] == 22
+    assert not a.kinds(P.BYE)
+
+
+def test_repeated_hello_updates_address(env):
+    io, srv, mk = env
+    a = mk(name="a", session=11)
+    a.connect()
+    a2 = mk(name="a", session=11)  # same session from a new source port
+    a2.hello()
+    assert a2.wait(lambda: a2.kinds(P.WELCOME))
+    assert a2.wait(lambda: a2.kinds(P.STATE))  # streams now go to the new address
+
+
+def test_oversize_messages_are_truncated(env):
+    io, srv, mk = env
+    p = mk()
+    p.connect()
+    srv.notify([P.LOG, 1, 50, "n", "あ" * 5000])
+    srv.handlers.send([P.SHELL_COMPLETION, 1, "t", 0, ["cand%04d" % i for i in range(2000)]])
+    srv.handlers.send([P.RESULT, 2, False, "x" * 5000])
+    assert p.wait(lambda: p.rels(P.SHELL_COMPLETION) and p.rels(P.LOG) and p.rels(P.RESULT))
+    assert 0 < len(p.rels(P.SHELL_COMPLETION)[0][4]) < 2000
+    assert all(len(P.encode(m)) <= 1200 for m in p.rx)

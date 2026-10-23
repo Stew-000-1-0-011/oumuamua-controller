@@ -119,6 +119,12 @@ class Supervisor:
     def cancel_to_manual(self) -> None:
         self.leave_auto()
 
+    @_locked
+    def link_lost(self) -> None:
+        """Enter STOP with reason "link lost" (no-op if already stopped)."""
+        if self.mode != Mode.STOP:
+            self._enter_stop("link lost")
+
     # -- internals -----------------------------------------------------
     def _timed_out(self, now_s: float) -> bool:
         return self._last_rx is None or now_s - self._last_rx > self.timeout_s

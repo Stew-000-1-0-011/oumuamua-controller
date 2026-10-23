@@ -5,6 +5,7 @@ import queue
 import socket
 import threading
 import time
+import traceback
 from pathlib import Path
 from typing import Optional
 
@@ -13,7 +14,7 @@ from . import task_memory
 from .completion import complete as _complete
 from .handlers import Handlers
 from .reliable import ReliableReceiver, ReliableSender
-from .rosio import RosIo
+from .rosio import RosIo, Snapshot
 from .shells import ShellManager
 from .supervisor import Supervisor
 
@@ -35,6 +36,40 @@ def _finite_points(points) -> list:
         if math.isfinite(x) and math.isfinite(y):
             out.append((x, y))
     return out
+
+
+MAX_DATAGRAM = 1200
+_REL_OVERHEAD = [P.REL, 2**32 - 1, 2**32 - 1]
+
+
+def _cut(text, nbytes: int) -> str:
+    return str(text).encode("utf-8")[:max(0, nbytes)].decode("utf-8", "ignore")
+
+
+def _fits(msg: list) -> bool:
+    return len(P.encode(_REL_OVERHEAD + [msg])) <= MAX_DATAGRAM
+
+
+def _fit(msg: list) -> list:
+    """Shrink LOG text, RESULT message and SHELL_COMPLETION candidates to fit one datagram."""
+    if not msg or _fits(msg):
+        return msg
+    msg = list(msg)
+    try:
+        if msg[0] == P.LOG:
+            msg[3] = _cut(msg[3], 64)
+            msg[4] = _cut(msg[4], 700)
+        elif msg[0] == P.RESULT:
+            msg[3] = _cut(msg[3], 900)
+        elif msg[0] == P.SHELL_COMPLETION:
+            msg[2] = _cut(msg[2], 64)
+            cands = [_cut(c, 200) for c in msg[4]]
+            while cands and not _fits(msg[:4] + [cands]):
+                cands.pop()
+            msg[4] = cands
+    except (IndexError, TypeError):
+        pass
+    return msg
 
 
 def _walls(bounds, obstacles) -> list:
@@ -59,7 +94,7 @@ class BridgeServer:
 
     def __init__(self, robot_name: str, io: RosIo, config: dict, log_root: Path,
                  port: int = P.PORT, beacon_port: int = P.BEACON_PORT,
-                 beacon_addr: str = "255.255.255.255"):
+                 beacon_addr: str = "255.255.255.255", operator_timeout_s: float = 5.0):
         self.robot_name = robot_name
         self.io = io
         self.config = dict(config)
@@ -81,6 +116,8 @@ class BridgeServer:
         self._session: Optional[int] = None
         self._client_name = ""
         self._addr = None
+        self._operator_timeout = operator_timeout_s
+        self._last_op_rx = 0.0
         self._max_ctl_seq = 0
         self._ack_seq = 0
         self._ack_t = 0
@@ -120,6 +157,7 @@ class BridgeServer:
     # -- sending --------------------------------------------------------
     def _send(self, msg: list) -> None:
         """Non-blocking: append to the reliable sender (dropped when nobody is connected)."""
+        msg = _fit(msg)
         with self._txlock:
             if self._session is not None:
                 self._sender.push(msg)
@@ -144,11 +182,16 @@ class BridgeServer:
         self._send([P.SHELL_CLOSED, tab, reason])
 
     # -- session --------------------------------------------------------
-    def _handle_hello(self, m: list, addr) -> None:
+    def _handle_hello(self, m: list, addr, now: float) -> None:
         session, name, takeover = int(m[1]), str(m[2]), bool(m[3])
         if session == 0:
             return
+        if self._session is not None and name != self._client_name and session != self._session \
+                and now - self._last_op_rx > self._operator_timeout:
+            self._release_operator()  # the old operator is gone: no busy, no BYE
         if self._session == session:
+            self._addr = addr
+            self._last_op_rx = now
             self._tx([P.WELCOME, session, self.robot_name, True, ""], addr)
             return
         if self._session is not None and name != self._client_name:
@@ -156,14 +199,18 @@ class BridgeServer:
                 self._tx([P.WELCOME, session, self.robot_name, False, "busy"], addr)
                 return
             self._tx([P.BYE, self._session, "taken over"], self._addr)
-        self._new_session(session, name, addr)
+        self._new_session(session, name, addr, now)
 
-    def _new_session(self, session: int, name: str, addr) -> None:
-        with self.sup.lock:
-            if self.sup.mode != 2:
-                self.sup._enter_stop("link lost")  # protocol 5.1: stopped until CONTROL + release
+    def _release_operator(self) -> None:
+        with self._txlock:
+            self._session = None
+            self._addr = None
+
+    def _new_session(self, session: int, name: str, addr, now: float) -> None:
+        self.sup.link_lost()  # protocol 5.1: stopped until CONTROL + release
         with self._txlock:
             self._session, self._client_name, self._addr = session, name, addr
+            self._last_op_rx = now
             self._sender.reset()
             self._receiver.reset()
             self._max_ctl_seq = 0
@@ -173,7 +220,11 @@ class BridgeServer:
 
     def _initial_burst(self) -> None:
         c = self.config
-        snap = self.io.snapshot()
+        try:
+            snap = self.io.snapshot()
+        except Exception:
+            traceback.print_exc()
+            snap = Snapshot()
         burst = [
             [P.CONFIG, self.robot_name, list(self.io.path_names()),
              [list(p) for p in c.get("lift_presets", [])], float(c.get("lift_max", 0.19)),
@@ -220,9 +271,11 @@ class BridgeServer:
         try:
             kind = m[0]
             if kind == P.HELLO:
-                self._handle_hello(m, addr)
+                self._handle_hello(m, addr, now)
             elif self._session is None or len(m) < 2 or m[1] != self._session:
                 return
+            elif self._note_rx(now):
+                pass
             elif kind == P.CONTROL:
                 self._on_control(m, now)
             elif kind == P.REL:
@@ -236,6 +289,12 @@ class BridgeServer:
                     self._addr = None
         except (IndexError, TypeError, ValueError):
             pass
+        except Exception:
+            traceback.print_exc()
+
+    def _note_rx(self, now: float) -> bool:
+        self._last_op_rx = now
+        return False
 
     def _on_control(self, m: list, now: float) -> None:
         seq = int(m[2])
@@ -256,9 +315,6 @@ class BridgeServer:
                 self.handlers.handle(d)  # unknown kinds are ignored by Handlers (still ACKed)
 
     # -- periodic -------------------------------------------------------
-    def _snapshot(self):
-        return self.io.snapshot()
-
     def _send_state(self, snap) -> None:
         with self.sup.lock:
             mode, reason = int(self.sup.mode), self.sup.stop_reason
@@ -338,26 +394,43 @@ class BridgeServer:
                 except OSError:
                     break
             now = time.monotonic()
-            try:
-                self.shells.poll(0)
-                self._drain_notify()
-                if now >= next_tick:
-                    next_tick = max(next_tick + TICK_S, now - TICK_S)
-                    snap = self._snapshot()
-                    yaw = snap.pose[2] if snap.pose else None
+            cache = {}
+
+            def snap():
+                """One io.snapshot() per loop turn, taken lazily; None if it raises."""
+                if "s" not in cache:
+                    try:
+                        cache["s"] = self.io.snapshot()
+                    except Exception:
+                        traceback.print_exc()
+                        cache["s"] = None
+                return cache["s"]
+
+            def guarded(fn):
+                try:
+                    fn()
+                except Exception:
+                    traceback.print_exc()
+
+            if now >= next_tick:  # first: the deadman must not depend on anything else
+                next_tick = max(next_tick + TICK_S, now - TICK_S)
+
+                def tick():
+                    s = snap()
+                    yaw = s.pose[2] if s is not None and s.pose else None
                     self.sup.tick(now, yaw)
-                if now >= next_state:
-                    next_state = max(next_state + STATE_S, now - STATE_S)
-                    if self._session is not None:
-                        self._send_state(self._snapshot())
-                if now >= next_scan:
-                    next_scan = max(next_scan + SCAN_S, now - SCAN_S)
-                    if self._session is not None:
-                        self._send_scan(self._snapshot())
-                if now >= next_beacon:
-                    next_beacon = now + BEACON_S
-                    self._tx([P.BEACON, self.robot_name, self.port], self._beacon_to)
-                self._flush_reliable(now)
-            except Exception:
-                import traceback
-                traceback.print_exc()
+                guarded(tick)
+            guarded(lambda: self.shells.poll(0))
+            guarded(self._drain_notify)
+            if now >= next_state:
+                next_state = max(next_state + STATE_S, now - STATE_S)
+                if self._session is not None and snap() is not None:
+                    guarded(lambda: self._send_state(snap()))
+            if now >= next_scan:
+                next_scan = max(next_scan + SCAN_S, now - SCAN_S)
+                if self._session is not None and snap() is not None:
+                    guarded(lambda: self._send_scan(snap()))
+            if now >= next_beacon:
+                next_beacon = now + BEACON_S
+                guarded(lambda: self._tx([P.BEACON, self.robot_name, self.port], self._beacon_to))
+            guarded(lambda: self._flush_reliable(now))

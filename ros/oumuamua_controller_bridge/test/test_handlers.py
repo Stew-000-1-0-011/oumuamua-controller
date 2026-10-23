@@ -175,8 +175,7 @@ def test_shell_flow():
     sent.clear()
     h.handle([P.SHELL_RENAME, 5, "a", "b"])
     h.handle([P.SHELL_CLOSE, 6, "b"])
-    assert sent == [[P.SHELL_CLOSED, "b", "closed"], [P.RESULT, 6, True, ""]] or \
-        [r[2] for r in sent if r[0] == P.RESULT] == [True, True]
+    assert [r[2] for r in sent if r[0] == P.RESULT] == [True, True]
     assert [m for m in sent if m[0] == P.SHELL_CLOSED] == [[P.SHELL_CLOSED, "b", "closed"]]
 
 
