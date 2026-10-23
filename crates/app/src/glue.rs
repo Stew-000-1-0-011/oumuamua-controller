@@ -103,6 +103,11 @@ struct Glue {
     auto_message: (String, bool),
     /// A picked pose awaiting 決定: `(x, y, yaw)`.
     pending_pose: Option<(f64, f64, f64)>,
+    /// The RUN_TASK / START_PATH awaiting its RESULT or its appearance in STATE:
+    /// `(req, sent, accepted_at)`.
+    start_pending: Option<(u32, Instant, Option<Instant>)>,
+    /// `(kind, args)` of the last RUN_TASK sent, for naming its TASK_DONE.
+    last_sent_task: Option<(u8, [i32; 4])>,
     /// The task last seen running, to name its TASK_DONE.
     last_task: Option<(u8, [i32; 4])>,
     /// How many TASK_DONE have been shown.
@@ -439,21 +444,36 @@ impl Glue {
             return Some("接続が切れています".to_owned());
         }
         let s = self.model.state();
+        if self.start_blocks() {
+            return Some("作業中のため押せません".to_owned());
+        }
         auto::task_block_reason(s.map(|s| s.mode), s.and_then(|s| s.task.as_ref()))
     }
 
+    /// A RUN_TASK / START_PATH we sent is still unanswered or not yet visible in STATE.
+    fn start_blocks(&self) -> bool {
+        let Some((_, _, accepted)) = self.start_pending else { return false };
+        let shown = self.model.state().is_some_and(|s| s.task.is_some() || s.path.is_some());
+        auto::start_pending(accepted.is_none(), accepted.map(|t| t.elapsed().as_millis() as u64), shown)
+    }
+
     /// Sends a request from the auto page and remembers it to show its RESULT.
-    fn auto_send(&mut self, label: String, build: impl FnOnce(u32) -> Msg) {
-        let Some(c) = &self.client else { return };
+    fn auto_send(&mut self, label: String, build: impl FnOnce(u32) -> Msg) -> Option<u32> {
+        let c = self.client.as_ref()?;
         let req = c.next_req();
         c.send(build(req));
         self.auto_reqs.push((req, label, Instant::now()));
+        Some(req)
     }
 
     fn auto_run(&mut self, kind: u8, args: [i32; 4]) {
         let [gripper, block, column, row] = args;
         let label = auto::task_label(kind, args);
-        self.auto_send(label, |req| Msg::RunTask { req, kind, gripper, block, column, row });
+        let req = self.auto_send(label, |req| Msg::RunTask { req, kind, gripper, block, column, row });
+        if let Some(req) = req {
+            self.start_pending = Some((req, Instant::now(), None));
+            self.last_sent_task = Some((kind, args));
+        }
     }
 
     fn auto_pick(&mut self, gripper: i32, block: i32) {
@@ -500,7 +520,9 @@ impl Glue {
             return;
         }
         let name = name.to_owned();
-        self.auto_send(format!("経路 {name}"), |req| Msg::StartPath { req, name });
+        if let Some(req) = self.auto_send(format!("経路 {name}"), |req| Msg::StartPath { req, name }) {
+            self.start_pending = Some((req, Instant::now(), None));
+        }
     }
 
     fn auto_toggle_tracker(&mut self) {
@@ -556,6 +578,19 @@ impl Glue {
 
     /// Shows RESULTs of auto-page requests and TASK_DONE on the bottom line.
     fn collect_auto_results(&mut self) {
+        if let Some((req, sent, accepted)) = &mut self.start_pending {
+            match self.model.results.iter().find(|r| r.0 == *req) {
+                Some((_, true, _)) => {
+                    accepted.get_or_insert_with(Instant::now);
+                }
+                Some(_) => self.start_pending = None,
+                None if sent.elapsed() >= Duration::from_millis(manual::REQ_KEEP_MS) => self.start_pending = None,
+                None => {}
+            }
+        }
+        if self.start_pending.is_some() && !self.start_blocks() && self.start_pending.is_some_and(|p| p.2.is_some()) {
+            self.start_pending = None;
+        }
         let results = &self.model.results;
         let message = &mut self.auto_message;
         let keep = Duration::from_millis(manual::REQ_KEEP_MS);
@@ -575,8 +610,9 @@ impl Glue {
         if count != self.done_seen {
             self.done_seen = count;
             if let Some((kind, ok, msg)) = done {
-                let label = match self.last_task {
-                    Some((k, args)) if k == *kind => auto::task_label(k, args),
+                let label = match (self.last_task, self.last_sent_task) {
+                    (Some((k, args)), _) | (None, Some((k, args))) if k == *kind => auto::task_label(k, args),
+                    (_, Some((k, args))) if k == *kind => auto::task_label(k, args),
                     _ => auto::task_label(*kind, [0; 4]),
                 };
                 self.auto_message = (auto::done_text(&label, *ok, msg), *ok);
@@ -675,6 +711,8 @@ impl Glue {
         self.pending_pose = None;
         self.pane(AUTO_MAP).pose_drag = None;
         self.last_task = None;
+        self.start_pending = None;
+        self.last_sent_task = None;
         self.done_seen = 0;
         let (client, rx) = Client::start(addr, self.name.clone(), takeover);
         self.client = Some(client);
@@ -844,6 +882,8 @@ pub fn start(window: &MainWindow) -> Rc<RefCell<GlueHandle>> {
         forget_pressed_at: None,
         auto_message: (String::new(), true),
         pending_pose: None,
+        start_pending: None,
+        last_sent_task: None,
         last_task: None,
         done_seen: 0,
         auto_shown: (Vec::new(), Vec::new(), Vec::new()),

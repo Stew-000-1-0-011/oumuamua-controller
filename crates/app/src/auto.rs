@@ -71,6 +71,18 @@ pub fn place_gripper(memory: &TaskMemory, current: u8) -> Option<u8> {
     if h.contains(&current) { Some(current) } else { h.first().copied() }
 }
 
+/// How long after an accepted RUN_TASK / START_PATH the state may take to show it.
+pub const ACCEPT_GRACE_MS: u64 = 2000;
+
+/// Whether a task or path start we sent still blocks new ones: its RESULT is outstanding
+/// (`in_flight`), or it was accepted `accepted_ago_ms` ago and the state does not show it yet.
+pub fn start_pending(in_flight: bool, accepted_ago_ms: Option<u64>, shown_in_state: bool) -> bool {
+    if in_flight {
+        return true;
+    }
+    !shown_in_state && accepted_ago_ms.is_some_and(|ms| ms < ACCEPT_GRACE_MS)
+}
+
 /// Why the task buttons cannot be used now, or `None` when they can.
 pub fn task_block_reason(mode: Option<Mode>, task: Option<&TaskState>) -> Option<String> {
     if task.is_some() {
@@ -181,6 +193,16 @@ mod tests {
         assert!(task_block_reason(Some(Mode::Manual), Some(&t)).unwrap().contains("作業中"));
         assert!(task_block_reason(Some(Mode::Stopped), None).unwrap().contains("停止中"));
         assert!(task_block_reason(None, None).is_some());
+    }
+
+    #[test]
+    fn start_pending_rules() {
+        assert!(start_pending(true, None, false), "no RESULT yet");
+        assert!(start_pending(true, None, true));
+        assert!(start_pending(false, Some(500), false), "accepted, state not yet showing it");
+        assert!(!start_pending(false, Some(500), true), "state shows it: the task gate takes over");
+        assert!(!start_pending(false, Some(2000), false), "grace is capped");
+        assert!(!start_pending(false, None, false), "nothing sent, or a failed RESULT");
     }
 
     #[test]
