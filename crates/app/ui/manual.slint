@@ -49,9 +49,11 @@ component JogButton inherits Rectangle {
     ta := TouchArea {
         enabled: root.enabled;
         pointer-event(e) => {
+            // A cancel (Exit while held) carries button `other`; it must still release the jog.
+            if e.kind == PointerEventKind.cancel { root.released(); return; }
             if e.button != PointerEventButton.left { return; }
             if e.kind == PointerEventKind.down { root.pressed(); }
-            else if e.kind == PointerEventKind.up || e.kind == PointerEventKind.cancel { root.released(); }
+            else if e.kind == PointerEventKind.up { root.released(); }
         }
     }
 }

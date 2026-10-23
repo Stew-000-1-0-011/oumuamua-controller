@@ -90,6 +90,15 @@ lifts. A single finger behaves exactly as before.
 - `TouchState` helpers added: `plain_primary_id`, `gesture_active`, `tracked`, `forget`,
   `adopt_first_finger`.
 
+### Final review fixes
+
+- Deliberate deviation from stock: the primary finger's `Cancelled` (Idle branch of
+  `TouchState::process_ended`) sends `Exit` only, no `Released`, so a TouchArea does not fire
+  `clicked` (Android ACTION_CANCEL from a system gesture must not actuate a button). Stock sends
+  Released + Exit. Same as the secondary route. The unit test `single_finger_cancel` is updated.
+- `set_active(false)` (WindowActiveChanged(false), Android LostFocus) calls
+  `reset_secondary_touches`: Exit to all secondary / pair items, ignored touches cleared.
+
 ### Known limits
 
 - Secondary fingers get no click counting (`ClickState` is primary-only): double-click style

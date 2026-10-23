@@ -1597,7 +1597,7 @@ impl WindowInner {
         (state, accepted)
     }
 
-    /// Release everything held by secondary fingers (window hidden, component replaced).
+    /// Release everything held by secondary fingers (window hidden, window deactivated).
     fn reset_secondary_touches(&self) {
         self.ignored_touches.borrow_mut().clear();
         let secondaries = self.secondary_touches.take();
@@ -2084,6 +2084,11 @@ impl WindowInner {
 
         if let Some(focus_item) = self.focus_item.borrow().upgrade() {
             focus_item.borrow().as_ref().focus_event(&event, &self.window_adapter(), &focus_item);
+        }
+
+        // MULTITOUCH: no per-finger state may survive a pause / focus loss.
+        if !have_focus {
+            self.reset_secondary_touches();
         }
 
         // If we lost focus due to for example a global shortcut, then when we regain focus

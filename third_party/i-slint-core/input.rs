@@ -2450,12 +2450,16 @@ impl TouchState {
             GestureRecognitionState::Idle => {
                 if self.primary_touch_id == Some(id) {
                     self.primary_touch_id = None;
-                    events.push(MouseEvent::Released {
-                        position,
-                        button: PointerEventButton::Left,
-                        click_count: 0,
-                        touch_finger_id: id + 1,
-                    });
+                    // MULTITOUCH: a cancelled touch (e.g. Android system gesture) is not a
+                    // click: Exit only, like secondary fingers. Stock sends Released first.
+                    if !is_cancelled {
+                        events.push(MouseEvent::Released {
+                            position,
+                            button: PointerEventButton::Left,
+                            click_count: 0,
+                            touch_finger_id: id + 1,
+                        });
+                    }
                     events.push(MouseEvent::Exit);
                 }
             }
@@ -2822,7 +2826,8 @@ mod touch_tests {
         state.process(1, pt(100.0, 200.0), TouchPhase::Started);
 
         let evs = state.process(1, pt(100.0, 200.0), TouchPhase::Cancelled);
-        assert_eq!(classify(&evs), vec![Ev::Released(100.0, 200.0), Ev::Exit]);
+        // MULTITOUCH: cancel is not a click (stock: Released + Exit).
+        assert_eq!(classify(&evs), vec![Ev::Exit]);
     }
 
     #[test]

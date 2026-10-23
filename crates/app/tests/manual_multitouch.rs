@@ -5,7 +5,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use app::manual::{DEFAULT_LEVELS, Manual};
-use i_slint_core::input::TouchPhase::{self, Ended, Moved, Started};
+use i_slint_core::input::TouchPhase::{self, Cancelled, Ended, Moved, Started};
 use i_slint_core::lengths::LogicalPoint;
 use i_slint_core::platform::{InternalEvent, WindowEvent};
 use link::ControlInput;
@@ -175,4 +175,63 @@ fn two_fingers_on_one_side_share_it() {
     assert_eq!(read(), (0, 0));
     touch(w, 0, 310., 140., Ended);
     assert_eq!(read(), (0, 0));
+}
+
+fn full_host() -> (Host, Rc<RefCell<Manual>>) {
+    i_slint_backend_testing::init_no_event_loop();
+    let host = Host::new().unwrap();
+    let manual = Rc::new(RefCell::new(Manual::default()));
+    let m = manual.clone();
+    host.on_stick(move |x, y| m.borrow_mut().set_stick(x, y));
+    let m = manual.clone();
+    host.on_slider(move |s| m.borrow_mut().set_slider(s));
+    let m = manual.clone();
+    host.on_jog_pressed(move |side, dir| m.borrow_mut().jog_press(side as u8, dir as i8));
+    let m = manual.clone();
+    host.on_jog_released(move |side| m.borrow_mut().jog_release(side as u8));
+    host.show().unwrap();
+    (host, manual)
+}
+
+fn read_all(manual: &Rc<RefCell<Manual>>) -> ControlInput {
+    let mut c = ControlInput::default();
+    manual.borrow().apply(&mut c, &DEFAULT_LEVELS, true);
+    c
+}
+
+#[test]
+fn cancel_of_all_fingers_zeroes_everything_and_ids_are_reusable() {
+    let (host, manual) = full_host();
+    let w = host.window();
+    touch(w, 0, 130., 60., Started);
+    touch(w, 1, 800., 250., Started);
+    touch(w, 2, 310., 140., Started);
+    let c = read_all(&manual);
+    assert!(c.vx > 0.0 && c.wz < 0.0 && c.jog_left == 1, "{c:?}");
+
+    touch(w, 0, 130., 60., Cancelled);
+    touch(w, 1, 800., 250., Cancelled);
+    touch(w, 2, 310., 140., Cancelled);
+    let c = read_all(&manual);
+    assert_eq!((c.vx, c.vy, c.wz, c.jog_left, c.jog_right), (0.0, 0.0, 0.0, 0, 0), "{c:?}");
+
+    // id 0 is reused for a fresh press on the stick.
+    touch(w, 0, 130., 60., Started);
+    assert!(read_all(&manual).vx > 0.0);
+    touch(w, 0, 130., 60., Ended);
+    assert_eq!(read_all(&manual).vx, 0.0);
+}
+
+#[test]
+fn first_finger_up_before_second_finger_up() {
+    let (host, manual) = full_host();
+    let w = host.window();
+    touch(w, 0, 130., 60., Started);
+    touch(w, 1, 800., 250., Started);
+    touch(w, 0, 130., 60., Ended);
+    let c = read_all(&manual);
+    assert_eq!((c.vx, c.vy), (0.0, 0.0));
+    assert!(c.wz < 0.0, "slider still held: {c:?}");
+    touch(w, 1, 800., 250., Ended);
+    assert_eq!(read_all(&manual).wz, 0.0);
 }

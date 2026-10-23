@@ -607,3 +607,74 @@ fn second_finger_while_first_flickable_press_is_pending() {
     touch(w, 0, 10., 160., Ended);
     assert!(!ui.get_button_pressed());
 }
+
+// ---- final review fixes ----
+
+slint::slint! {
+    export component ClickUi inherits Window {
+        width: 400px;
+        height: 300px;
+        in-out property <int> clicks;
+        out property <bool> a-pressed: a.pressed;
+        out property <bool> b-pressed: b.pressed;
+        a := TouchArea { x: 0px; y: 0px; width: 100px; height: 100px; clicked => { root.clicks += 1; } }
+        b := TouchArea { x: 200px; y: 0px; width: 100px; height: 100px; clicked => { root.clicks += 1; } }
+    }
+}
+
+fn click_setup() -> ClickUi {
+    i_slint_backend_testing::init_no_event_loop();
+    let ui = ClickUi::new().unwrap();
+    ui.show().unwrap();
+    ui
+}
+
+#[test]
+fn cancel_is_not_a_click_primary_and_secondary_but_ended_clicks() {
+    let ui = click_setup();
+    let w = ui.window();
+    touch(w, 0, 10., 10., Started);
+    assert!(ui.get_a_pressed());
+    touch(w, 0, 10., 10., Cancelled);
+    assert!(!ui.get_a_pressed());
+    assert_eq!(ui.get_clicks(), 0);
+
+    touch(w, 0, 10., 10., Started);
+    touch(w, 1, 210., 10., Started);
+    assert!(ui.get_b_pressed());
+    touch(w, 1, 210., 10., Cancelled);
+    assert!(!ui.get_b_pressed());
+    assert_eq!(ui.get_clicks(), 0);
+    touch(w, 0, 10., 10., Cancelled);
+    assert_eq!(ui.get_clicks(), 0);
+
+    touch(w, 0, 10., 10., Started);
+    touch(w, 0, 10., 10., Ended);
+    assert_eq!(ui.get_clicks(), 1);
+    touch(w, 0, 10., 10., Started);
+    touch(w, 1, 210., 10., Started);
+    touch(w, 1, 210., 10., Ended);
+    assert_eq!(ui.get_clicks(), 2);
+    touch(w, 0, 10., 10., Ended);
+    assert_eq!(ui.get_clicks(), 3);
+}
+
+#[test]
+fn window_deactivation_clears_secondary_and_ignored_touches() {
+    let ui = setup();
+    let w = ui.window();
+    touch(w, 0, 10., 10., Started);
+    touch(w, 1, 210., 10., Started);
+    touch(w, 2, 20., 20., Started); // ignored: left area is owned by finger 0
+    assert!(ui.get_right_pressed());
+    w.dispatch_event(WindowEvent::WindowActiveChanged(false));
+    assert!(!ui.get_right_pressed(), "secondary item must be released");
+    assert!(!ui.get_right_hover());
+    w.dispatch_event(WindowEvent::WindowActiveChanged(true));
+    // stale ids are forgotten: id 2 (formerly ignored) can start fresh on a free area
+    touch(w, 0, 10., 10., Ended);
+    touch(w, 2, 210., 10., Started);
+    assert!(ui.get_right_pressed());
+    touch(w, 2, 210., 10., Ended);
+    assert!(!ui.get_right_pressed());
+}
