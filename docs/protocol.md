@@ -9,7 +9,7 @@ Rust (`crates/proto`) と Python (`ros/oumuamua_controller_bridge/oumuamua_contr
 - UDP の 1 データグラム = MessagePack の値 1 つ。値は必ず配列で、先頭が種類の番号。
 - 数の書き方は MessagePack の最短形(正の整数は uint、負は int)。実数はすべて float64(0xcb)。文字列は str、バイト列は bin。無いことは nil。
 - 単位: 長さ m、角度 rad、速度 m/s・rad/s、時刻 ms(u32、桁あふれで 0 に戻る)。座標はフィールド座標系(原点はフィールド中心、+x がスタート→ビンゴ、+y が左)。
-- 1 データグラムは 1200 バイト以下。
+- 1 データグラムは 1200 バイト以下。橋渡しノードが送る REL がこれを超えるときは、LOG の本文(700 バイト)、RESULT の message(900 バイト)、SHELL_COMPLETION の候補(1 つ 200 バイト、入りきるまで後ろから削る)を UTF-8 の境界で切り詰める。SHELL_OPENED の replay は先頭 900 バイトまでで、残りは SHELL_OUTPUT に分ける。
 - ポート: 橋渡しノードは UDP 47800 で受ける。名乗りは UDP 47801 への同報(255.255.255.255)。
 - 知らない種類の番号は捨てる。配列の要素が多すぎるときは、知っている分だけ読む(後から要素を末尾に足せるように)。
 
@@ -46,13 +46,14 @@ Rust (`crates/proto`) と Python (`ros/oumuamua_controller_bridge/oumuamua_contr
 - grippers は [左, 右] = [gripper0, gripper1]。届いていなければ nil。
   - Gripper: `[height: f64, goal: f64, moving: bool, arrived: bool, suction: bool, feedback: bool]`
 - task は作業中なら `[kind: u8, step: str, args: [gripper: i32, block: i32, column: i32, row: i32]]`(kind は RunTask の type)。作業中でなければ nil。
-- path は path_follower で走っている経路(~/start で始めたもの)。無ければ nil。
+- path は path_follower で走っている経路(START_PATH で始めたもの。終わると nil に戻る)。無ければ nil。
 
 ## 3. 確実に届ける流れ
 
 - 向きごとに独立。送る側は seq を 1 から振り、REL を送る。受ける側は順番どおりに渡し、ACK で cum を返す。
 - 送る側: 未確認の REL を 100 ms ごとに送り直す。未確認は 64 個まで(超えたら送るのを待つ)。
 - 受ける側: 次に欲しい番号より先のものは 64 個先まで取っておく。それより先と、もう渡した番号は捨てる。REL を受けるたびに ACK を返す(重複でも)。
+- 出力の洪水: 未確認の REL が 64 個以上のあいだ、橋渡しノードはシェルの出力を送らずに捨てる(その tab を覚えておく)。未確認が 16 個未満に戻ったら、その tab の SHELL_OPENED(replay、直近 64 KiB まで)を送り直して、スマホの表示をそろえる。LOG は未確認が 32 個を超えるあいだ送らない。
 - session が変わったら、両側とも番号を 1 からやり直す。前の session の未送信分は捨てる(シェルの出力は 5.2 の再送で補う)。
 
 ## 4. Msg(REL の中身)
@@ -69,7 +70,7 @@ Rust (`crates/proto`) と Python (`ros/oumuamua_controller_bridge/oumuamua_contr
 | 13 | LIFT_ZERO | `[13, req, gripper: u8]` | `~/zero_lift` |
 | 14 | RUN_TASK | `[14, req, kind: u8, gripper: i32, block: i32, column: i32, row: i32]` | task_commander `~/run`。自動へ |
 | 15 | CANCEL | `[15, req]` | 作業を取り消し、経路を止め、追従を切って手動へ(ポップアップの「手動制御へ」も同じ) |
-| 16 | START_PATH | `[16, req, name: str]` | 追従を入れて `/path_follower/start/<name>`。自動へ |
+| 16 | START_PATH | `[16, req, name: str]` | 追従を入れて、`/path_follower/follow` アクション(`path_follower/action/FollowPath`、`route` = name、ほかは空 / 0)で経路を走る。ゴールが受け付けられたら自動へ(RESULT は受け付けの時点)。経路が終わる(成功・失敗・取り消し)と、追従を切って手動へ戻る。経路の名前の一覧は `/path_follower/start/*` のサービスから取る |
 | 17 | SET_TRACKER | `[17, req, on: bool]` | `/tracker_node/enable` |
 | 18 | SET_POSE | `[18, req, x: f64, y: f64, yaw: f64]` | `/initialpose` |
 | 19 | TASK_RESET | `[19, req]` | `/task_commander/reset` |
@@ -103,6 +104,8 @@ Rust (`crates/proto`) と Python (`ros/oumuamua_controller_bridge/oumuamua_contr
 
 ### 5.1 停止
 
+- 操作者の枠: 今の操作者から 5 秒間どのデータグラムも来なければ、枠を空ける(BYE は送らない)。そのとき停止に入り("link lost")、STATE / SCAN / 再送をやめる。次の HELLO はふつうに受け入れる。操作者の BYE を受けたときも、すぐ停止に入って枠を空ける。
+- 停止の間は、昇降(LIFT_TO / LIFT_ZERO)、吸引を入れる(SET_SUCTION on)、追従を入れる(SET_TRACKER on)、START_PATH、RUN_TASK は `stopped: <理由>` で失敗する。吸引を切る、追従を切るは受け付ける。解除(RELEASE_STOP)の後は、解除より新しい CONTROL が来るまで速度は 0。CONTROL の vx / vy / wz が有限でない値なら 0 とみなす。
 - 停止に入る条件: CONTROL の estop が true、または今の操作者の CONTROL が 0.3 秒届かない。接続した直後(最初の CONTROL の前)も停止とする。
 - 停止に入るとき 1 回: 作業の取り消し、`/path_follower/stop`、追従を切る、昇降の動きを取り消す、左右の吸引を切る。
 - 停止の間: 速度 0 の `/cmd_vel` を 50 回/秒。

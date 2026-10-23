@@ -34,7 +34,7 @@ LiDAR against the outer walls). Its `DEFAULT_CONFIG` mirrors `config/bridge.yaml
   prints its UDP port.
 - With `sim:=true` bringup: the phone connects, STATE shows pose/wheels/grippers, SCAN draws points
   in the `field` frame (needs TF `field` <- scan frame), `/cmd_vel` moves the sim robot.
-- Path list in CONFIG matches `ros2 service list | grep /path_follower/start/`; start/stop/tracker work.
+- Path list in CONFIG matches `ros2 service list | grep /path_follower/start/`; start/stop/tracker work. START_PATH runs the `/path_follower/follow` action (`path_follower/action/FollowPath`, `route` = name): the phone goes to auto when the goal is accepted and back to manual when it finishes; `/path_follower/stop` and a cancel also cancel the goal.
 - `RunTask` goals: feedback steps show up, cancel and failures end with TASK_DONE(false, reason).
 - MoveLift goals and cancel; suction; `/gripper{i}/zero_lift` (assumed to exist; without it the
   phone gets "<name> がありません" after 1 s).
