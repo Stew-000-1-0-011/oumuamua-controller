@@ -1,0 +1,276 @@
+"""ROS-free simulated robot: a RosIo implementation plus `main()` that runs BridgeServer on it.
+
+    python3 -m oumuamua_controller_bridge.fake_robot [--port 47800]
+
+Simplifications: cmd_vel is integrated on a plane (no wall collisions); path following completes
+at once; a task walks through its stages one second each and then succeeds; lifts move at
+0.05 m/s; suction switches instantly; the LiDAR casts a ray every 1 degree against the outer field
+walls only (obstacles are not hit). The model advances whenever snapshot() is called.
+"""
+import argparse
+import math
+import threading
+import time
+from pathlib import Path
+
+from . import protocol as P
+from .config import expand_env
+from .rosio import Snapshot
+
+DEFAULT_CONFIG = {
+    "robot_name": "oumuamua",
+    "lift_presets": [["下段", 0.01], ["中段", 0.35], ["上段", 0.69], ["0 点", 0.0]],
+    "lift_max": 0.19,
+    "speed_levels": [[0.3, 1.0], [0.8, 1.8], [1.5, 2.5]],
+    "blocks": 6, "columns": 3, "rows": 3,
+    "field_bounds": [-2.786, -1.655, 2.786, 1.655],
+    "field_obstacles": [
+        -2.8025, -0.0165, 1.5625, 0.0165,
+        -0.8375, 0.019, -0.8045, 0.8905,
+        -0.8375, -0.8905, -0.8045, -0.019,
+        -1.5955, 1.069, -1.5625, 1.669,
+        -1.5955, -1.669, -1.5625, -1.069,
+        -1.5955, 0.0165, -1.5625, 0.2665,
+        -1.5955, -0.2665, -1.5625, -0.0165,
+        0.0045, 0.8715, 0.0375, 1.6715,
+        0.0045, -1.6715, 0.0375, -0.8715,
+        0.8045, 0.019, 0.8375, 0.8905,
+        0.8045, -0.8905, 0.8375, -0.019,
+        2.5025, -0.0165, 2.8025, 0.0165,
+        1.5625, -0.30, 2.5025, 0.30,
+    ],
+    "shelf": [1.5625, -0.30, 2.5025, 0.30],
+    "start_pose": [-2.2, 1.3, 0.0],
+    "robot_radius": 0.32,
+    "completion_setup_files": ["/opt/ros/$ROS_DISTRO/setup.bash"],
+}
+
+LIFT_SPEED = 0.05  # m/s
+STAGE_S = 1.0
+MAX_RANGE = 30.0
+PATHS = ["slalom_forward", "slalom_backward"]
+TASK_STAGES = {0: ["ブロックへ移動", "吸着", "持ち上げ"], 5: ["棚へ移動", "差し込み", "解放"]}
+DEFAULT_STAGES = ["移動中", "到着"]
+
+
+def _ray_box_exit(ox, oy, dx, dy, box):
+    """Distance from an interior point to the box boundary along (dx, dy), or None."""
+    x0, y0, x1, y1 = box
+    best = None
+    for o, d, lo, hi in ((ox, dx, x0, x1), (oy, dy, y0, y1)):
+        if abs(d) < 1e-12:
+            continue
+        t = ((hi if d > 0 else lo) - o) / d
+        if t >= 0 and (best is None or t < best):
+            best = t
+    return best
+
+
+class FakeRosIo:
+    def __init__(self, config=None, clock=time.monotonic):
+        self.config = dict(config or DEFAULT_CONFIG)
+        self._clock = clock
+        self._lock = threading.RLock()
+        self._pose = list(self.config["start_pose"])
+        self._cmd = (0.0, 0.0, 0.0)
+        self._last = clock()
+        self._tracker = False
+        self._suction = [False, False]
+        self._lift = [dict(h=0.0, goal=0.0, moving=False, arrived=True, done=None) for _ in range(2)]
+        self._task = None  # dict(kind, gripper, block, column, row, stages, i, t0, step, done)
+        self._holding = [False, False]
+        self._picked, self._placed = [], []
+        self._path = []
+
+    # -- model ----------------------------------------------------------
+    def _advance(self):
+        """Step the model to now; returns the callbacks to fire after the lock is released."""
+        fire = []
+        now = self._clock()
+        dt = max(0.0, now - self._last)
+        self._last = now
+        vx, vy, wz = self._cmd
+        x, y, yaw = self._pose
+        c, s = math.cos(yaw), math.sin(yaw)
+        self._pose = [x + (vx * c - vy * s) * dt, y + (vx * s + vy * c) * dt, yaw + wz * dt]
+        for lift in self._lift:
+            if not lift["moving"]:
+                continue
+            err = lift["goal"] - lift["h"]
+            step = LIFT_SPEED * dt
+            if abs(err) <= step:
+                lift.update(h=lift["goal"], moving=False, arrived=True)
+                done, lift["done"] = lift["done"], None
+                if done:
+                    fire.append(lambda d=done: d(True, ""))
+            else:
+                lift["h"] += math.copysign(step, err)
+        t = self._task
+        if t is not None:
+            while t is self._task and now - t["t0"] >= STAGE_S:
+                t["t0"] += STAGE_S
+                t["i"] += 1
+                if t["i"] >= len(t["stages"]):
+                    self._finish_task_effects(t)
+                    self._task = None
+                    fire.append(lambda d=t["done"]: d(True, ""))
+                else:
+                    fire.append(lambda f=t["step"], s=t["stages"][t["i"]]: f(s))
+        return fire
+
+    def _finish_task_effects(self, t):
+        g = t["gripper"] if t["gripper"] in (0, 1) else 0
+        if t["kind"] == 0:
+            self._holding[g] = True
+            self._picked.append(t["block"])
+        elif t["kind"] == 5:
+            self._holding[g] = False
+            self._placed.append((t["column"], t["row"]))
+
+    @staticmethod
+    def _run(fire):
+        for f in fire:
+            f()
+
+    def _task_text(self):
+        h = " ".join(f"gripper{i}={'yes' if v else 'no'}" for i, v in enumerate(self._holding))
+        cells = " ".join(f"({c},{r})" for c, r in self._placed)
+        return (f"holding: {h}\npicked blocks: {' '.join(str(b) for b in self._picked)}\n"
+                f"placed cells: {cells}")
+
+    def _scan(self):
+        x, y, yaw = self._pose
+        box = self.config["field_bounds"]
+        pts = []
+        if not (box[0] < x < box[2] and box[1] < y < box[3]):
+            return pts
+        for deg in range(360):
+            a = yaw + math.radians(deg)
+            d = _ray_box_exit(x, y, math.cos(a), math.sin(a), box)
+            if d is not None and d <= MAX_RANGE:
+                pts.append((x + d * math.cos(a), y + d * math.sin(a)))
+        return pts
+
+    # -- RosIo ----------------------------------------------------------
+    def publish_cmd_vel(self, vx, vy, wz):
+        with self._lock:
+            self._cmd = (float(vx), float(vy), float(wz))
+
+    def stop_path(self, done):
+        with self._lock:
+            self._path = []
+        done(True, "")
+
+    def start_path(self, name, done):
+        with self._lock:
+            x0, y0 = self._pose[0], self._pose[1]
+            self._path = [(x0 + 0.1 * i, y0) for i in range(20)]
+        done(True, "")
+
+    def set_tracker(self, on, done):
+        with self._lock:
+            self._tracker = bool(on)
+        done(True, "")
+
+    def set_pose(self, x, y, yaw):
+        with self._lock:
+            self._pose = [float(x), float(y), float(yaw)]
+
+    def run_task(self, kind, gripper, block, column, row, step, done):
+        stages = TASK_STAGES.get(kind, DEFAULT_STAGES)
+        with self._lock:
+            if self._task is not None:
+                reject = True
+            else:
+                reject = False
+                self._task = dict(kind=kind, gripper=gripper, block=block, column=column, row=row,
+                                  stages=stages, i=0, t0=self._clock(), step=step, done=done)
+        if reject:
+            done(False, "task already running")
+        else:
+            step(stages[0])
+
+    def cancel_task(self):
+        with self._lock:
+            t, self._task = self._task, None
+        if t:
+            t["done"](False, "canceled")
+
+    def task_reset(self, done):
+        with self._lock:
+            self._holding = [False, False]
+            self._picked, self._placed = [], []
+        done(True, "")
+
+    def set_suction(self, gripper, on, done):
+        with self._lock:
+            self._suction[gripper] = bool(on)
+        done(True, "")
+
+    def lift_to(self, gripper, height, done):
+        with self._lock:
+            lift = self._lift[gripper]
+            prev, lift["done"] = lift["done"], done
+            lift.update(goal=float(height), moving=True, arrived=False)
+        if prev:
+            prev(False, "superseded")
+
+    def lift_cancel(self, gripper):
+        with self._lock:
+            lift = self._lift[gripper]
+            done, lift["done"] = lift["done"], None
+            lift.update(moving=False, arrived=False, goal=lift["h"])
+        if done:
+            done(False, "canceled")
+
+    def lift_zero(self, gripper, done):
+        with self._lock:
+            prev, self._lift[gripper]["done"] = self._lift[gripper]["done"], None
+            self._lift[gripper].update(h=0.0, goal=0.0, moving=False, arrived=True)
+        if prev:
+            prev(False, "zeroed")
+        done(True, "")
+
+    def snapshot(self):
+        with self._lock:
+            fire = self._advance()
+            snap = Snapshot(
+                pose=tuple(self._pose), vel=self._cmd,
+                wheels=[(24.0, True)] * 3,
+                grippers=[(l["h"], l["goal"], l["moving"], l["arrived"], self._suction[i], True)
+                          for i, l in enumerate(self._lift)],
+                scan=self._scan(), path=list(self._path), task_text=self._task_text(),
+                tracker_enabled=self._tracker)
+        self._run(fire)  # outside our lock: callbacks take the supervisor lock
+        return snap
+
+    def path_names(self):
+        return list(PATHS)
+
+
+def main(argv=None):
+    ap = argparse.ArgumentParser(description="BridgeServer on a simulated robot (no ROS)")
+    ap.add_argument("--port", type=int, default=P.PORT)
+    ap.add_argument("--beacon-port", type=int, default=P.BEACON_PORT)
+    ap.add_argument("--beacon-addr", default="255.255.255.255")
+    args = ap.parse_args(argv)
+    from .server import BridgeServer  # local: keeps the module import light
+
+    config = expand_env(DEFAULT_CONFIG)
+    server = BridgeServer(config["robot_name"], FakeRosIo(config), config,
+                          log_root=Path.home() / ".oumuamua_controller" / "console",
+                          port=args.port, beacon_port=args.beacon_port,
+                          beacon_addr=args.beacon_addr)
+    server.start()
+    print(f"fake robot '{config['robot_name']}' listening on UDP {server.port} (Ctrl-C to stop)")
+    try:
+        while True:
+            time.sleep(0.5)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        server.stop()
+
+
+if __name__ == "__main__":
+    main()

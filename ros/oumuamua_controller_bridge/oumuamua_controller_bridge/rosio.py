@@ -14,6 +14,7 @@ class Snapshot:
     scan: list = field(default_factory=list)  # [(x, y)]
     path: list = field(default_factory=list)  # [(x, y)]
     task_text: Optional[str] = None
+    tracker_enabled: bool = False
 
 
 class RosIo(Protocol):
