@@ -4,6 +4,9 @@
 //! style changes). Escape sequences and UTF-8 sequences split across `feed`
 //! calls are handled by keeping state between calls.
 
+/// Longest OSC payload kept before the sequence is abandoned.
+const MAX_OSC: usize = 4096;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Color {
     Indexed(u8),
@@ -94,6 +97,7 @@ pub struct Parser {
     csi: Vec<u8>,
     utf8: Vec<u8>,
     utf8_need: usize,
+    osc_len: usize,
 }
 
 impl Default for Parser {
@@ -110,6 +114,7 @@ impl Parser {
             csi: Vec::new(),
             utf8: Vec::new(),
             utf8_need: 0,
+            osc_len: 0,
         }
     }
 
@@ -127,7 +132,10 @@ impl Parser {
                     self.csi.clear();
                     self.state = State::Csi;
                 }
-                b']' => self.state = State::Osc,
+                b']' => {
+                    self.osc_len = 0;
+                    self.state = State::Osc;
+                }
                 0x20..=0x2f => {} // intermediate: keep waiting for the final byte
                 0x1b => {}
                 _ => self.state = State::Ground,
@@ -144,7 +152,17 @@ impl Parser {
             State::Osc => match b {
                 0x07 => self.state = State::Ground,
                 0x1b => self.state = State::OscEsc,
-                _ => {}
+                b'\n' => {
+                    // Unterminated OSC: give up and treat the newline normally.
+                    self.state = State::Ground;
+                    self.ground(b, out);
+                }
+                _ => {
+                    self.osc_len += 1;
+                    if self.osc_len > MAX_OSC {
+                        self.state = State::Ground;
+                    }
+                }
             },
             State::OscEsc => match b {
                 b'\\' => self.state = State::Ground,
@@ -153,7 +171,10 @@ impl Parser {
                     self.csi.clear();
                     self.state = State::Csi;
                 }
-                b']' => self.state = State::Osc,
+                b']' => {
+                    self.osc_len = 0;
+                    self.state = State::Osc;
+                }
                 0x1b => {}
                 _ => self.state = State::Ground,
             },

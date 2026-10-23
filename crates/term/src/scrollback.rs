@@ -8,6 +8,8 @@ use crate::ansi::{Cell, Event, Line, Parser, Style, cells_to_line};
 const FOLD_OVER: usize = 30;
 /// Lines shown from the end of a folded block.
 const FOLD_KEEP: usize = 10;
+/// Longest line in cells; further output wraps onto a new line.
+const MAX_COLS: usize = 4096;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Row {
@@ -97,6 +99,10 @@ impl Scrollback {
         for &e in &events {
             self.apply(e);
         }
+        if events.capacity() > 64 * 1024 {
+            events.clear();
+            events.shrink_to(4096);
+        }
         self.events = events;
         self.trim();
     }
@@ -122,12 +128,15 @@ impl Scrollback {
                 }
             }
             Event::EraseLine(_) => self.cur.clear(),
-            Event::CursorRight(n) => self.col += n,
+            Event::CursorRight(n) => self.col = (self.col + n).min(MAX_COLS),
             Event::CursorLeft(n) => self.col = self.col.saturating_sub(n),
         }
     }
 
     fn put(&mut self, ch: char, style: Style) {
+        if self.col >= MAX_COLS {
+            self.newline();
+        }
         while self.cur.len() < self.col {
             self.cur.push(Cell {
                 ch: ' ',
@@ -403,6 +412,45 @@ mod tests {
         let n = s.rows().len();
         assert!(n > 11, "{n}");
         assert!(!texts(&s).iter().any(|t| t.starts_with("<folded")));
+    }
+
+    #[test]
+    fn cursor_right_and_long_lines_bounded() {
+        let mut s = Scrollback::new(100_000);
+        for _ in 0..10_000 {
+            s.feed(b"\x1b[1000C");
+        }
+        s.feed(b"x");
+        for r in s.rows() {
+            if let Row::Line(l) = r {
+                assert!(l.text().chars().count() <= 4096);
+            }
+        }
+        let mut s = Scrollback::new(100_000);
+        s.feed(&vec![b'a'; 1_000_000]);
+        s.toggle_fold(0);
+        let rows = s.rows();
+        assert!(rows.len() > 200);
+        for r in rows {
+            if let Row::Line(l) = r {
+                assert!(l.text().chars().count() <= 4096);
+            }
+        }
+    }
+
+    #[test]
+    fn unterminated_osc_does_not_swallow_output() {
+        let mut s = Scrollback::new(100);
+        s.feed(b"\x1b]0;never ended");
+        s.feed(b"hello\nworld\n");
+        // The OSC payload ("never ended" + "hello") is lost, but the newline
+        // aborts it so later output is shown.
+        assert_eq!(texts(&s), ["", "world"]);
+        let mut s = Scrollback::new(100);
+        s.feed(b"\x1b]0;");
+        s.feed(&vec![b'z'; 5000]);
+        s.feed(b"ok\n");
+        assert!(texts(&s)[0].ends_with("ok"));
     }
 
     #[test]
