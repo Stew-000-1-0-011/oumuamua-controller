@@ -20,7 +20,7 @@ from nav_msgs.msg import Odometry
 from nav_msgs.msg import Path as PathMsg
 from rcl_interfaces.msg import Log
 from rclpy.action import ActionClient
-from rclpy.callback_groups import ReentrantCallbackGroup
+from rclpy.callback_groups import MutuallyExclusiveCallbackGroup, ReentrantCallbackGroup
 from rclpy.duration import Duration
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy, qos_profile_sensor_data
@@ -32,6 +32,7 @@ from task_commander.action import RunTask
 from tf2_ros import Buffer, TransformListener
 
 from . import protocol as P
+from .guards import REPLY_TIMEOUT_S, Watchdog, once, with_timeout
 from .rosio import Done, Snapshot
 
 WHEEL_COUNT = 3
@@ -62,6 +63,8 @@ class _Goal:
         self.handle = None
         self.cancel_requested = False
         self.finished = False
+        self.done = None  # once-guarded done, set by _send_goal
+        self.cancel_dog = None
 
 
 class RosIoNode(Node):
@@ -93,7 +96,7 @@ class RosIoNode(Node):
         self.create_subscription(Odometry, "/state_estimator/odom", self._on_odom, 10,
                                  callback_group=g)
         self.create_subscription(LaserScan, "/scan", self._on_scan, qos_profile_sensor_data,
-                                 callback_group=g)
+                                 callback_group=MutuallyExclusiveCallbackGroup())
         self.create_subscription(PathMsg, "/path_follower/path", self._on_path, LATCHED,
                                  callback_group=g)
         self.create_subscription(String, "/task_commander/state", self._on_task_state, LATCHED,
@@ -145,7 +148,7 @@ class RosIoNode(Node):
 
     def _on_rosout(self, m: Log):
         notify = self.notify
-        if notify is None:
+        if notify is None or m.name == self.get_name():
             return
         stamp_ms = int(m.stamp.sec) * 1000 + int(m.stamp.nanosec) // 1_000_000
         notify([P.LOG, stamp_ms, int(m.level), str(m.name), str(m.msg)])
@@ -201,8 +204,10 @@ class RosIoNode(Node):
 
     # -- RosIo: services ------------------------------------------------
     def _call(self, client, request, name: str, done: Done, on_ok=None) -> None:
-        """Call a service; done(False, "<name> がありません") if it is not up within 1 s.
+        """Call a service; done(False, "<name> がありません") if it is not up within 1 s, and
+        done(False, "<name>: 応答がありません") if it does not reply within 5 s.
         Never blocks the caller (the supervisor calls us under its lock)."""
+        done = once(done)
         if client.service_is_ready():
             self._send_request(client, request, name, done, on_ok)
             return
@@ -216,6 +221,7 @@ class RosIoNode(Node):
         threading.Thread(target=wait_then_call, name="svc-wait", daemon=True).start()
 
     def _send_request(self, client, request, name, done, on_ok) -> None:
+        done, _dog = with_timeout(done, f"{name}: 応答がありません")
         try:
             future = client.call_async(request)
         except Exception as e:  # e.g. context shut down
@@ -225,12 +231,16 @@ class RosIoNode(Node):
         def finished(fut):
             try:
                 res = fut.result()
+                ok, msg = bool(res.success), str(res.message)
             except Exception as e:
                 done(False, f"{name}: {e}")
                 return
-            if res.success and on_ok:
-                on_ok()
-            done(bool(res.success), str(res.message))
+            done(ok, msg)  # first, so a failing follow-up cannot swallow it
+            if ok and on_ok:
+                try:
+                    on_ok()
+                except Exception as e:
+                    self.get_logger().error(f"{name}: {e}")
 
         future.add_done_callback(finished)
 
@@ -271,8 +281,12 @@ class RosIoNode(Node):
     # -- RosIo: actions -------------------------------------------------
     def _send_goal(self, client, goal_msg, name: str, goal: _Goal, on_feedback, on_result,
                    done: Done) -> None:
-        """Send an action goal without blocking. `on_result(wrapped_result)` -> (ok, message) is
-        called for a finished goal; rejection, abort-free cancel and errors all end in done()."""
+        """Send an action goal without blocking. `on_result(result)` -> (ok, message) is used for
+        a finished goal; rejection, abort, cancel, errors and a silent server all end in done().
+        Acceptance has a 5 s watchdog; the running goal itself has no timeout."""
+        if goal.done is None:
+            goal.done = once(done)
+        done = goal.done
         if not client.server_is_ready():
             def wait_then_send():
                 if client.wait_for_server(timeout_sec=SERVICE_WAIT_S):
@@ -284,7 +298,15 @@ class RosIoNode(Node):
             threading.Thread(target=wait_then_send, name="action-wait", daemon=True).start()
             return
 
+        def accept_timeout():
+            goal.finished = True
+            goal.cancel_requested = True  # if it is accepted late, cancel it
+            done(False, f"{name}: 応答がありません")
+
+        accept_dog = Watchdog(REPLY_TIMEOUT_S, accept_timeout)
+
         def accepted(fut):
+            accept_dog.cancel()
             try:
                 handle = fut.result()
             except Exception as e:
@@ -298,36 +320,49 @@ class RosIoNode(Node):
             goal.handle = handle
             if goal.cancel_requested:
                 handle.cancel_goal_async()
+            if goal.finished:  # timed out already: just cancel, the result is not awaited
+                return
             handle.get_result_async().add_done_callback(finished)
 
         def finished(fut):
             goal.finished = True
+            if goal.cancel_dog:
+                goal.cancel_dog.cancel()
             try:
                 wrapped = fut.result()
+                if wrapped.status == GoalStatus.STATUS_CANCELED:
+                    done(False, "取り消されました")
+                elif wrapped.status == GoalStatus.STATUS_ABORTED:
+                    done(False, getattr(wrapped.result, "message", "") or "中断されました")
+                else:
+                    ok, msg = on_result(wrapped.result)
+                    done(ok, msg)
             except Exception as e:
                 done(False, f"{name}: {e}")
-                return
-            if wrapped.status == GoalStatus.STATUS_CANCELED:
-                done(False, "取り消されました")
-            elif wrapped.status == GoalStatus.STATUS_ABORTED:
-                msg = getattr(wrapped.result, "message", "")
-                done(False, msg or "中断されました")
-            else:
-                ok, msg = on_result(wrapped.result)
-                done(ok, msg)
 
         try:
             client.send_goal_async(goal_msg, feedback_callback=on_feedback).add_done_callback(
                 accepted)
         except Exception as e:
+            accept_dog.cancel()
             goal.finished = True
             done(False, f"{name}: {e}")
 
     @staticmethod
     def _cancel_goal(goal: Optional[_Goal]) -> None:
-        if goal is None or goal.finished:
+        """Cancel; the result callback normally resolves done. If the server stays silent for
+        5 s, done(False) fires anyway."""
+        if goal is None or goal.finished or goal.cancel_requested:
             return
         goal.cancel_requested = True
+        if goal.done is not None and goal.cancel_dog is None:
+            d = goal.done
+
+            def timeout():
+                goal.finished = True
+                d(False, "取り消しの応答がありません")
+
+            goal.cancel_dog = Watchdog(REPLY_TIMEOUT_S, timeout)
         if goal.handle is not None:
             goal.handle.cancel_goal_async()
 

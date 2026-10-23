@@ -2,18 +2,17 @@
 from pathlib import Path
 
 import rclpy
-from rclpy.executors import MultiThreadedExecutor
+from rclpy.executors import ExternalShutdownException, MultiThreadedExecutor
 from rclpy.node import Node
 from rclpy.parameter import Parameter
 
-from .config import build_config, expand_env
-from .fake_robot import DEFAULT_CONFIG
+from .config import DEFAULTS, build_config, expand_env
 from .ros_io import RosIoNode
 from .server import BridgeServer
 
 def _flat_defaults() -> dict:
-    """Same keys as config/bridge.yaml, defaults from fake_robot.DEFAULT_CONFIG (ROS-free)."""
-    c = DEFAULT_CONFIG
+    """Same keys as config/bridge.yaml, defaults from config.DEFAULTS (ROS-free)."""
+    c = DEFAULTS
     flat = {k: c[k] for k in ("robot_name", "lift_max", "blocks", "columns", "rows",
                               "field_bounds", "field_obstacles", "shelf", "start_pose",
                               "robot_radius", "completion_setup_files")}
@@ -46,7 +45,7 @@ def main(args=None):
         io.get_logger().info(f"bridge '{config['robot_name']}' on UDP {server.port}")
         executor.add_node(io)
         executor.spin()
-    except KeyboardInterrupt:
+    except (KeyboardInterrupt, ExternalShutdownException):
         pass
     finally:
         io.notify = None

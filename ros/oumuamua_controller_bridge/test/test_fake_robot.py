@@ -1,8 +1,8 @@
 import math
 from pathlib import Path
 
-from oumuamua_controller_bridge.config import build_config, parse_simple_yaml
-from oumuamua_controller_bridge.fake_robot import DEFAULT_CONFIG, FakeRosIo
+from oumuamua_controller_bridge.config import DEFAULTS, build_config, parse_simple_yaml
+from oumuamua_controller_bridge.fake_robot import FakeRosIo
 
 BRIDGE_YAML = Path(__file__).resolve().parent.parent / "config" / "bridge.yaml"
 
@@ -102,4 +102,4 @@ def test_fake_suction_and_tracker_and_zero():
 
 def test_default_config_matches_bridge_yaml():
     params = parse_simple_yaml(BRIDGE_YAML.read_text(encoding="utf-8"))
-    assert build_config(params) == DEFAULT_CONFIG
+    assert build_config(params) == DEFAULTS
