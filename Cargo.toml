@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/proto", "crates/link", "crates/term", "crates/app", "crates/multitouch-tests"]
+members = ["crates/proto", "crates/link", "crates/demo", "crates/term", "crates/app", "crates/multitouch-tests"]
 exclude = ["third_party"]
 resolver = "3"
 
