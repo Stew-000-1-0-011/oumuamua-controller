@@ -479,8 +479,12 @@ impl Server {
                 }
             }
             Msg::SetPose { req, x, y, yaw } => {
-                self.sim.pose = [x, y, yaw];
-                self.reply(req, true, "");
+                if [x, y, yaw].iter().all(|v| v.is_finite()) {
+                    self.sim.pose = [x, y, yaw];
+                    self.reply(req, true, "");
+                } else {
+                    self.reply(req, false, "bad request: pose is not finite");
+                }
             }
             Msg::TaskReset { req } => {
                 self.sim.reset_memory();

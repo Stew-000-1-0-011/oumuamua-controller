@@ -5,7 +5,9 @@ use proto::{Gripper, TaskState};
 
 pub const ROBOT_NAME: &str = "oumuamua (demo)";
 pub const PATHS: [&str; 2] = ["slalom_forward", "slalom_backward"];
-pub const LIFT_PRESETS: [(&str, f64); 4] = [("下段", 0.01), ("中段", 0.10), ("上段", 0.19), ("0 点", 0.0)];
+// Field and lift values are config.py DEFAULTS (ros/oumuamua_controller_bridge); a test keeps them equal.
+// The presets above lift_max stay: the phone disables those buttons, as with the real robot.
+pub const LIFT_PRESETS: [(&str, f64); 4] = [("下段", 0.01), ("中段", 0.35), ("上段", 0.69), ("0 点", 0.0)];
 pub const LIFT_MAX: f64 = 0.19;
 pub const SPEED_LEVELS: [(f64, f64); 3] = [(0.3, 1.0), (0.8, 1.8), (1.5, 2.5)];
 pub const BLOCKS: u8 = 6;
@@ -362,5 +364,37 @@ mod tests {
         assert!(s.advance(2.9).is_empty() && s.path_points().len() == 25);
         assert!(matches!(s.advance(0.2)[..], [Event::PathDone]));
         assert!(!s.busy());
+    }
+
+    /// Numbers of `"key": ...` in config.py DEFAULTS (quoted strings skipped).
+    fn defaults(key: &str) -> Vec<f64> {
+        const PY: &str = include_str!("../../../ros/oumuamua_controller_bridge/oumuamua_controller_bridge/config.py");
+        let from = PY.find(&format!("    \"{key}\":")).expect(key) + key.len() + 7;
+        let rest = &PY[from..];
+        let body = &rest[..rest.find("\n    \"").or(rest.find("\n}")).unwrap_or(rest.len())];
+        let (mut plain, mut quoted) = (String::new(), false);
+        for c in body.chars() {
+            match c {
+                '"' => quoted = !quoted,
+                _ if quoted => {}
+                '0'..='9' | '.' | '-' => plain.push(c),
+                _ => plain.push(' '),
+            }
+        }
+        plain.split_whitespace().filter_map(|t| t.parse().ok()).collect()
+    }
+
+    #[test]
+    fn config_matches_python_defaults() {
+        let flat = |v: &[[f64; 4]]| v.concat();
+        assert_eq!(defaults("lift_presets"), LIFT_PRESETS.iter().map(|p| p.1).collect::<Vec<_>>());
+        assert_eq!(defaults("lift_max"), [LIFT_MAX]);
+        assert_eq!(defaults("speed_levels"), SPEED_LEVELS.iter().flat_map(|s| [s.0, s.1]).collect::<Vec<_>>());
+        assert_eq!(defaults("blocks"), [f64::from(BLOCKS), f64::from(COLUMNS), f64::from(ROWS)]); // one line in config.py
+        assert_eq!(defaults("field_bounds"), BOUNDS);
+        assert_eq!(defaults("field_obstacles"), flat(&OBSTACLES));
+        assert_eq!(defaults("shelf"), SHELF);
+        assert_eq!(defaults("start_pose"), START);
+        assert_eq!(defaults("robot_radius"), [ROBOT_RADIUS]);
     }
 }

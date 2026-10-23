@@ -270,3 +270,48 @@ fn stop_ends_the_thread_and_releases_the_port() {
     assert!(t.elapsed() < Duration::from_secs(1));
     UdpSocket::bind(addr).expect("port is free after stop");
 }
+
+#[test]
+fn estop_stops_and_turns_suction_off_and_release_is_refused_while_held() {
+    let (_r, c, mut p) = connect();
+    release(&c, &mut p);
+    assert!(call(&c, &mut p, |req| Msg::SetSuction { req, gripper: 2, on: true }).0);
+    p.state(1.0, |s| s.grippers.iter().all(|g| g.is_some_and(|g| g.suction)));
+    c.set_control(ControlInput { estop: true, ..Default::default() });
+    let s = p.state(1.0, |s| s.mode == Mode::Stopped && s.stop_reason == "estop");
+    assert!(s.grippers.iter().all(|g| g.is_some_and(|g| !g.suction)));
+    assert_eq!(call(&c, &mut p, |req| Msg::ReleaseStop { req }), (false, "estop is still pressed".into()));
+    let (ok, msg) = call(&c, &mut p, |req| Msg::SetSuction { req, gripper: 0, on: true });
+    assert!(!ok && msg == "stopped: estop", "{msg}");
+    assert!(call(&c, &mut p, |req| Msg::SetSuction { req, gripper: 0, on: false }).0);
+    c.set_control(ControlInput::default());
+    release(&c, &mut p);
+}
+
+#[test]
+fn release_without_a_control_is_refused() {
+    let robot = DemoRobot::start().unwrap();
+    let sock = UdpSocket::bind("127.0.0.1:0").unwrap();
+    sock.set_read_timeout(Some(Duration::from_millis(50))).unwrap();
+    let send = |d: Datagram| sock.send_to(&d.encode(), robot.addr()).unwrap();
+    send(Datagram::Hello { session: 5, client_name: "raw".into(), takeover: false });
+    send(Datagram::Rel { session: 5, seq: 1, msg: Msg::ReleaseStop { req: 1 } });
+    let mut buf = [0u8; 2048];
+    let end = Instant::now() + Duration::from_secs(2);
+    while Instant::now() < end {
+        let Ok((n, _)) = sock.recv_from(&mut buf) else { continue };
+        if let Ok(Datagram::Rel { msg: Msg::Result { req: 1, ok, message }, .. }) = Datagram::decode(&buf[..n]) {
+            assert!(!ok && message == "no control received");
+            return;
+        }
+    }
+    panic!("no RESULT");
+}
+
+#[test]
+fn set_pose_rejects_non_finite_values() {
+    let (_r, c, mut p) = connect();
+    assert!(!call(&c, &mut p, |req| Msg::SetPose { req, x: f64::NAN, y: 0.0, yaw: 0.0 }).0);
+    assert!(call(&c, &mut p, |req| Msg::SetPose { req, x: 1.0, y: 0.5, yaw: 0.0 }).0);
+    p.state(1.0, |s| s.pose == Some([1.0, 0.5, 0.0]));
+}
