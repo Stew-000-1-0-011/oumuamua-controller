@@ -126,16 +126,19 @@ impl Manual {
     }
     /// Pressing 上/下 on `side` (0 left, 1 right); `dir` is +1 up, -1 down. With 両方 both move.
     pub fn jog_press(&mut self, side: u8, dir: i8) {
-        self.jog = if self.both {
-            [dir, dir]
-        } else if side == 0 {
-            [dir, 0]
+        if self.both {
+            self.jog = [dir, dir];
         } else {
-            [0, dir]
-        };
+            self.jog[usize::from(side.min(1))] = dir;
+        }
     }
-    pub fn jog_release(&mut self) {
-        self.jog = [0, 0];
+    /// Lifting a finger from `side`'s 上/下 stops only that side; with 両方 both stop.
+    pub fn jog_release(&mut self, side: u8) {
+        if self.both {
+            self.jog = [0, 0];
+        } else {
+            self.jog[usize::from(side.min(1))] = 0;
+        }
     }
     /// Drops every held input (page left, popup shown, link lost).
     pub fn release_all(&mut self) {
@@ -289,6 +292,25 @@ mod tests {
         m.release_all();
         m.apply(&mut c, &levels, true);
         assert_eq!((c.vx, c.vy, c.wz, c.jog_left, c.jog_right), (0.0, 0.0, 0.0, 0, 0));
+    }
+
+    #[test]
+    fn jog_release_is_per_side_unless_both() {
+        let levels = DEFAULT_LEVELS;
+        let mut m = Manual::default();
+        let mut c = ControlInput::default();
+        m.jog_press(0, 1);
+        m.jog_press(1, -1);
+        m.apply(&mut c, &levels, true);
+        assert_eq!((c.jog_left, c.jog_right), (1, -1));
+        m.jog_release(0);
+        m.apply(&mut c, &levels, true);
+        assert_eq!((c.jog_left, c.jog_right), (0, -1));
+        m.both = true;
+        m.jog_press(0, 1);
+        m.jog_release(1);
+        m.apply(&mut c, &levels, true);
+        assert_eq!((c.jog_left, c.jog_right), (0, 0));
     }
 
     #[test]

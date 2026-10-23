@@ -167,7 +167,7 @@ component LiftColumn inherits Rectangle {
     // Stopped: the robot refuses lift motion and suction-on.
     in property <bool> stopped: false;
     callback jog-pressed(int);
-    callback jog-released();
+    callback jog-released(int);
     callback preset(int);
     callback suction-toggled();
 
@@ -183,8 +183,8 @@ component LiftColumn inherits Rectangle {
         }
         HorizontalLayout {
             spacing: 6px;
-            JogButton { label: "上"; enabled: !root.stopped; pressed => { root.jog-pressed(1); } released => { root.jog-released(); } }
-            JogButton { label: "下"; enabled: !root.stopped; pressed => { root.jog-pressed(-1); } released => { root.jog-released(); } }
+            JogButton { label: "上"; enabled: !root.stopped; pressed => { root.jog-pressed(1); } released => { root.jog-released(root.side); } }
+            JogButton { label: "下"; enabled: !root.stopped; pressed => { root.jog-pressed(-1); } released => { root.jog-released(root.side); } }
         }
         HorizontalLayout {
             spacing: 4px;
@@ -228,7 +228,7 @@ export component ManualPage inherits Rectangle {
     callback stick-moved(float, float);
     callback slider-moved(float);
     callback jog-pressed(int, int);
-    callback jog-released();
+    callback jog-released(int);
     callback preset-pressed(int, int);
     callback suction-toggled(int);
     callback reset-pressed();
@@ -282,7 +282,7 @@ export component ManualPage inherits Rectangle {
                     suction: root.left-suction;
                     stopped: root.stopped;
                     jog-pressed(d) => { root.jog-pressed(0, d); }
-                    jog-released => { root.jog-released(); }
+                    jog-released(s) => { root.jog-released(s); }
                     preset(i) => { root.preset-pressed(0, i); }
                     suction-toggled => { root.suction-toggled(0); }
                 }
@@ -294,7 +294,7 @@ export component ManualPage inherits Rectangle {
                     suction: root.right-suction;
                     stopped: root.stopped;
                     jog-pressed(d) => { root.jog-pressed(1, d); }
-                    jog-released => { root.jog-released(); }
+                    jog-released(s) => { root.jog-released(s); }
                     preset(i) => { root.preset-pressed(1, i); }
                     suction-toggled => { root.suction-toggled(1); }
                 }

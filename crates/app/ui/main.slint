@@ -112,7 +112,7 @@ export component MainWindow inherits Window {
     callback manual-stick(float, float);
     callback manual-slider(float);
     callback manual-jog(int, int);
-    callback manual-jog-released();
+    callback manual-jog-released(int);
     callback manual-preset(int, int);
     callback manual-suction(int);
     callback manual-reset-pressed();
@@ -194,7 +194,7 @@ export component MainWindow inherits Window {
                     stick-moved(x, y) => { root.manual-stick(x, y); }
                     slider-moved(s) => { root.manual-slider(s); }
                     jog-pressed(side, dir) => { root.manual-jog(side, dir); }
-                    jog-released => { root.manual-jog-released(); }
+                    jog-released(s) => { root.manual-jog-released(s); }
                     preset-pressed(side, i) => { root.manual-preset(side, i); }
                     suction-toggled(side) => { root.manual-suction(side); }
                     reset-pressed => { root.manual-reset-pressed(); }

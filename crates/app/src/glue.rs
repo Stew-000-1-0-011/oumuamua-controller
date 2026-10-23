@@ -412,8 +412,8 @@ impl Glue {
         self.sync_manual();
     }
 
-    fn manual_jog_released(&mut self) {
-        self.manual.jog_release();
+    fn manual_jog_released(&mut self, side: i32) {
+        self.manual.jog_release(side.clamp(0, 1) as u8);
         self.sync_manual();
     }
 
@@ -1270,7 +1270,7 @@ pub fn start(window: &MainWindow) -> Rc<RefCell<GlueHandle>> {
         let g = glue.clone();
         window.on_manual_jog(move |side, dir| g.borrow_mut().manual_jog(side, dir));
         let g = glue.clone();
-        window.on_manual_jog_released(move || g.borrow_mut().manual_jog_released());
+        window.on_manual_jog_released(move |side| g.borrow_mut().manual_jog_released(side));
         let g = glue.clone();
         window.on_window_deactivated(move || {
             if let Ok(mut g) = g.try_borrow_mut() {

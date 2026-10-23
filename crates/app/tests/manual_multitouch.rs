@@ -18,9 +18,13 @@ slint::slint! {
         height: 500px;
         callback stick(float, float);
         callback slider(float);
+        callback jog-pressed(int, int);
+        callback jog-released(int);
         ManualPage {
             stick-moved(x, y) => { root.stick(x, y); }
             slider-moved(s) => { root.slider(s); }
+            jog-pressed(side, dir) => { root.jog-pressed(side, dir); }
+            jog-released(side) => { root.jog-released(side); }
         }
     }
 }
@@ -67,4 +71,35 @@ fn stick_and_slider_drive_manual_at_once() {
     touch(w, 1, 760., 250., Ended);
     let c = read();
     assert_eq!((c.vx, c.vy, c.wz), (0.0, 0.0, 0.0));
+}
+
+#[test]
+fn jog_release_is_per_side() {
+    i_slint_backend_testing::init_no_event_loop();
+    let host = Host::new().unwrap();
+    let manual = Rc::new(RefCell::new(Manual::default()));
+    let m = manual.clone();
+    host.on_jog_pressed(move |side, dir| m.borrow_mut().jog_press(side as u8, dir as i8));
+    let m = manual.clone();
+    host.on_jog_released(move |side| m.borrow_mut().jog_release(side as u8));
+    host.show().unwrap();
+    let w = host.window();
+    let read = || {
+        let mut c = ControlInput::default();
+        manual.borrow().apply(&mut c, &DEFAULT_LEVELS, true);
+        (c.jog_left, c.jog_right)
+    };
+
+    // Finger 0 on left 上, finger 1 on right 下.
+    touch(w, 0, 310., 140., Started);
+    touch(w, 1, 480., 140., Started);
+    assert_eq!(read(), (1, -1));
+    touch(w, 0, 310., 140., Ended);
+    assert_eq!(read(), (0, -1), "right keeps jogging");
+    touch(w, 0, 310., 140., Started);
+    assert_eq!(read(), (1, -1));
+    touch(w, 1, 480., 140., Ended);
+    assert_eq!(read(), (1, 0), "left keeps jogging");
+    touch(w, 0, 310., 140., Ended);
+    assert_eq!(read(), (0, 0));
 }
