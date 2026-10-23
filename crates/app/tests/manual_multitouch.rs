@@ -1,4 +1,4 @@
-//! Two fingers on the real ManualPage: the stick and the rotation slider are separate
+//! Two fingers on the real ManualPanel: the stick and the rotation slider are separate
 //! TouchAreas and drive the Manual state at the same time.
 
 use std::cell::RefCell;
@@ -12,7 +12,7 @@ use link::ControlInput;
 use slint::ComponentHandle;
 
 slint::slint! {
-    import { ManualPage } from "../ui/manual.slint";
+    import { ManualPanel } from "../ui/manual.slint";
     export component Host inherits Window {
         width: 1000px;
         height: 500px;
@@ -22,7 +22,7 @@ slint::slint! {
         callback jog-released(int);
         in-out property <bool> both <=> page.both;
         callback both-changed();
-        page := ManualPage {
+        page := ManualPanel {
             changed both => { root.both-changed(); }
             stick-moved(x, y) => { root.stick(x, y); }
             slider-moved(s) => { root.slider(s); }

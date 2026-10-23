@@ -4,13 +4,13 @@ component TabButton inherits Rectangle {
     in property <string> label;
     in property <bool> active;
     callback clicked();
-    min-height: Theme.tap;
+    min-height: 44px;
     background: root.active ? Theme.accent : Theme.panel;
     border-radius: 8px;
     Text {
         text: root.label;
         color: Theme.text;
-        font-size: Theme.font;
+        font-size: 15px;
         font-weight: root.active ? 700 : 400;
         horizontal-alignment: center;
         vertical-alignment: center;
@@ -20,7 +20,7 @@ component TabButton inherits Rectangle {
 
 // The right-edge strip: page switch, link status, emergency stop / release.
 // The parent places it inside the safe area.
-export component Strip inherits Rectangle {
+export component EdgeStrip inherits Rectangle {
     // 0 output, 1 manual, 2 auto
     in-out property <int> page;
     // Link status text ("接続中", "切断" ...) and its colour.
@@ -42,8 +42,8 @@ export component Strip inherits Rectangle {
 
     background: Theme.bg;
     VerticalLayout {
-        padding: 6px;
-        spacing: 6px;
+        padding: 4px;
+        spacing: 4px;
         TabButton { label: "出力"; active: root.page == 0; clicked => { root.page = 0; } }
         TabButton { label: "手動"; active: root.page == 1; clicked => { root.page = 1; } }
         TabButton { label: "自動"; active: root.page == 2; clicked => { root.page = 2; } }
@@ -51,48 +51,48 @@ export component Strip inherits Rectangle {
             VerticalLayout {
                 alignment: center;
                 if root.demo: Rectangle {
-                    height: 28px;
+                    height: 22px;
                     background: Theme.demo;
                     border-radius: 6px;
-                    Text { text: "デモ"; color: #000000; font-size: 16px; font-weight: 700; horizontal-alignment: center; vertical-alignment: center; }
+                    Text { text: "デモ"; color: #000000; font-size: 14px; font-weight: 700; horizontal-alignment: center; vertical-alignment: center; }
                 }
-                spacing: 2px;
+                spacing: 1px;
                 Text {
                     text: root.conn-text;
                     color: root.conn-color;
-                    font-size: 14px;
+                    font-size: 12px;
                     horizontal-alignment: center;
                     wrap: word-wrap;
                 }
                 Text {
                     text: root.rtt-ms >= 0 ? root.rtt-ms + " ms" : "- ms";
                     color: Theme.text;
-                    font-size: 14px;
+                    font-size: 12px;
                     horizontal-alignment: center;
                 }
                 Text {
                     text: root.mode-text;
                     color: root.stopped ? Theme.warn : Theme.ok;
-                    font-size: 14px;
+                    font-size: 12px;
                     horizontal-alignment: center;
                 }
             }
         }
         if root.connected: Rectangle {
-            height: Theme.tap;
+            height: 44px;
             background: Theme.panel;
             border-radius: 8px;
-            Text { text: "接続先"; color: Theme.text; font-size: 16px; horizontal-alignment: center; vertical-alignment: center; }
+            Text { text: "接続先"; color: Theme.text; font-size: 14px; horizontal-alignment: center; vertical-alignment: center; }
             TouchArea { clicked => { root.disconnect-pressed(); } }
         }
         Rectangle {
-            min-height: 72px;
+            min-height: 64px;
             background: root.stopped ? Theme.warn : Theme.danger;
             border-radius: 10px;
             Text {
                 text: root.stopped ? "解除" : "全停止";
                 color: root.stopped ? #000000 : #ffffff;
-                font-size: 20px;
+                font-size: 18px;
                 font-weight: 700;
                 horizontal-alignment: center;
                 vertical-alignment: center;

@@ -1,0 +1,18 @@
+import { Theme } from "theme.slint";
+
+// Failure reason band; the parent places it at the bottom of the content area.
+export component NoticeBand inherits Rectangle {
+    in property <string> text;
+    height: 40px;
+    background: Theme.danger;
+    Text {
+        x: 8px;
+        width: parent.width - 16px;
+        text: root.text;
+        color: #ffffff;
+        font-size: Theme.font;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+        overflow: elide;
+    }
+}

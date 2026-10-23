@@ -9,7 +9,7 @@ component Btn inherits Rectangle {
     in property <bool> enabled: true;
     callback clicked();
     min-height: Theme.tap;
-    min-width: 120px;
+    min-width: 100px;
     background: root.enabled ? root.fill : Theme.panel-hi;
     border-radius: 8px;
     Text { text: root.label; color: Theme.text; font-size: Theme.font; horizontal-alignment: center; vertical-alignment: center; }
@@ -32,8 +32,8 @@ export component ConnectScreen inherits Rectangle {
 
     background: Theme.bg;
     HorizontalLayout {
-        padding: 16px;
-        spacing: 16px;
+        padding: 12px;
+        spacing: 12px;
         VerticalLayout {
             spacing: 8px;
             Text { text: "ロボットを選ぶ"; color: Theme.text; font-size: 20px; }
@@ -63,7 +63,7 @@ export component ConnectScreen inherits Rectangle {
             LineEdit {
                 text <=> root.target;
                 placeholder-text: "192.168.0.10";
-                font-size: 20px;
+                font-size: 18px;
                 min-height: Theme.tap;
                 input-type: text;
             }
@@ -73,7 +73,7 @@ export component ConnectScreen inherits Rectangle {
                 Btn { label: "乗っ取って接続"; fill: Theme.warn; clicked => { root.connect(root.target, true); } }
             }
             Btn { label: "デモ(ロボットなしで試す)"; fill: Theme.demo; clicked => { root.connect-demo(); } }
-            Text { text: root.status; color: root.status-color; font-size: Theme.font; wrap: word-wrap; }
+            Text { text: root.status; color: root.status-color; font-size: 14px; wrap: word-wrap; overflow: elide; }
         }
     }
 }

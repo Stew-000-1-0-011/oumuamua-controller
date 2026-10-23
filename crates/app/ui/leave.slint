@@ -1,0 +1,37 @@
+import { Theme } from "theme.slint";
+
+// Confirmation before leaving the robot: covers the whole window and swallows touches.
+export component LeaveDialog inherits Rectangle {
+    callback cancel();
+    callback accept();
+    background: #000000a0;
+    TouchArea { }
+    Rectangle {
+        width: min(440px, parent.width - 32px);
+        height: 160px;
+        background: Theme.panel;
+        border-radius: 12px;
+        VerticalLayout {
+            padding: 16px;
+            spacing: 16px;
+            Text { text: "切断して接続先を選びますか"; color: Theme.text; font-size: 20px; horizontal-alignment: center; vertical-alignment: center; wrap: word-wrap; }
+            HorizontalLayout {
+                spacing: 16px;
+                Rectangle {
+                    height: Theme.tap;
+                    background: Theme.panel-hi;
+                    border-radius: 8px;
+                    Text { text: "いいえ"; color: Theme.text; font-size: 18px; horizontal-alignment: center; vertical-alignment: center; }
+                    TouchArea { clicked => { root.cancel(); } }
+                }
+                Rectangle {
+                    height: Theme.tap;
+                    background: Theme.accent;
+                    border-radius: 8px;
+                    Text { text: "はい"; color: Theme.text; font-size: 18px; horizontal-alignment: center; vertical-alignment: center; }
+                    TouchArea { clicked => { root.accept(); } }
+                }
+            }
+        }
+    }
+}

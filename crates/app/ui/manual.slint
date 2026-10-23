@@ -46,6 +46,8 @@ component JogButton inherits Rectangle {
         horizontal-alignment: center;
         vertical-alignment: center;
     }
+    // A disabled (or hidden) button never sees the finger-up: release here.
+    changed enabled => { if !root.enabled { root.released(); } }
     ta := TouchArea {
         enabled: root.enabled;
         pointer-event(e) => {
@@ -70,7 +72,8 @@ component Stick inherits Rectangle {
     property <float> ky: 0;
 
     pure function clamp1(v: float) -> float { return Math.max(-1, Math.min(1, v)); }
-    changed enabled => { if !root.enabled { root.kx = 0; root.ky = 0; } }
+    // A disabled (or hidden) stick never sees the finger-up: centre the knob and report zero.
+    changed enabled => { if !root.enabled { root.kx = 0; root.ky = 0; root.moved(0, 0); } }
 
     Rectangle {
         width: root.d;
@@ -121,7 +124,7 @@ component Slider inherits Rectangle {
     property <length> reach: (self.width - root.knob) / 2;
     property <float> k: 0;
     pure function clamp1(v: float) -> float { return Math.max(-1, Math.min(1, v)); }
-    changed enabled => { if !root.enabled { root.k = 0; } }
+    changed enabled => { if !root.enabled { root.k = 0; root.moved(0); } }
 
     Rectangle {
         height: root.knob;
@@ -208,7 +211,7 @@ component LiftColumn inherits Rectangle {
     }
 }
 
-export component ManualPage inherits Rectangle {
+export component ManualPanel inherits Rectangle {
     background: Theme.bg;
     // 0 低, 1 中, 2 高
     in-out property <int> level: 0;
@@ -236,6 +239,7 @@ export component ManualPage inherits Rectangle {
     callback reset-pressed();
     callback reset-confirmed();
     callback cancel-auto();
+    changed visible => { if !root.visible { root.reset-armed = false; } }
     // A disabled TouchArea never reports the finger-up, so disarm here.
     changed reset-enabled => { if !root.reset-enabled { root.reset-armed = false; } }
 
@@ -257,7 +261,9 @@ export component ManualPage inherits Rectangle {
             width: parent.width * 0.26;
             Text { text: "並進"; color: Theme.dim; font-size: 14px; horizontal-alignment: center; }
             Stick {
-                enabled: !root.auto-active;
+                // Hidden (another page showing) counts as disabled: the panel stays alive, so a
+                // held finger must be let go of.
+                enabled: !root.auto-active && root.visible;
                 moved(x, y) => { root.stick-moved(x, y); }
             }
         }
@@ -282,7 +288,7 @@ export component ManualPage inherits Rectangle {
                     info: root.left-info;
                     presets: root.presets;
                     suction: root.left-suction;
-                    stopped: root.stopped;
+                    stopped: root.stopped || !root.visible;
                     jog-pressed(d) => { root.jog-pressed(0, d); }
                     jog-released(s) => { root.jog-released(s); }
                     preset(i) => { root.preset-pressed(0, i); }
@@ -294,7 +300,7 @@ export component ManualPage inherits Rectangle {
                     info: root.right-info;
                     presets: root.presets;
                     suction: root.right-suction;
-                    stopped: root.stopped;
+                    stopped: root.stopped || !root.visible;
                     jog-pressed(d) => { root.jog-pressed(1, d); }
                     jog-released(s) => { root.jog-released(s); }
                     preset(i) => { root.preset-pressed(1, i); }
@@ -353,7 +359,7 @@ export component ManualPage inherits Rectangle {
             width: parent.width * 0.26;
             Text { text: "旋回"; color: Theme.dim; font-size: 14px; horizontal-alignment: center; }
             Slider {
-                enabled: !root.auto-active;
+                enabled: !root.auto-active && root.visible;
                 moved(s) => { root.slider-moved(s); }
             }
         }

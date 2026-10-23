@@ -14,10 +14,10 @@ render on Android devices whose fallback font has kanji but no kana.
 
 ## Monospace font (console)
 
-`DejaVuSansMono-subset.ttf` / `DejaVuSansMono-subset-Bold.ttf` are subsets of DejaVu Sans Mono
-(Debian `fonts-dejavu-core`, license in `DejaVu-LICENSE.txt`, about 28 KB each): U+0020-007E,
+`ui/fonts/DejaVuSansMono-subset.ttf` / `ui/fonts/DejaVuSansMono-subset-Bold.ttf` are subsets of DejaVu Sans Mono
+(Debian `fonts-dejavu-core`, license in `ui/fonts/DejaVu-LICENSE.txt`, about 28 KB each): U+0020-007E,
 U+00A0-00FF, box drawing and block elements (U+2500-259F), arrows U+2190-2193, U+2022, U+2026.
-`ui/console.slint` imports them, so Slint registers them (embedded with
+`ui/console.slint` imports them as `fonts/...`, so Slint registers them (embedded with
 `EmbedResourcesKind::EmbedFiles`, see `build.rs`) and `font-family: "DejaVu Sans Mono"` resolves
 on Android too.
 

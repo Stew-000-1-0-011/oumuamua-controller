@@ -10,14 +10,14 @@ use i_slint_core::platform::{InternalEvent, WindowEvent};
 use slint::ComponentHandle;
 
 slint::slint! {
-    import { ManualPage } from "../ui/manual.slint";
-    import { AutoPage } from "../ui/auto.slint";
+    import { ManualPanel } from "../ui/manual.slint";
+    import { AutoPanel } from "../ui/auto.slint";
     export component MHost inherits Window {
         width: 1000px;
         height: 500px;
         callback reset-pressed();
         callback reset-confirmed();
-        manual := ManualPage {
+        manual := ManualPanel {
             reset-enabled: true;
             reset-pressed => { root.reset-pressed(); }
             reset-confirmed => { root.reset-confirmed(); }
@@ -28,7 +28,7 @@ slint::slint! {
         height: 500px;
         callback forget-pressed();
         callback forget-confirmed();
-        auto := AutoPage {
+        auto := AutoPanel {
             forget-enabled: true;
             forget-pressed => { root.forget-pressed(); }
             forget-confirmed => { root.forget-confirmed(); }

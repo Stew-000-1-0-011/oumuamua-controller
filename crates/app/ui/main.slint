@@ -1,10 +1,12 @@
 import { Palette } from "std-widgets.slint";
 import { Theme } from "theme.slint";
-import { Strip } from "strip.slint";
+import { EdgeStrip } from "strip.slint";
+import { LeaveDialog } from "leave.slint";
+import { NoticeBand } from "notice.slint";
 import { ConnectScreen, Beacon } from "connect.slint";
-import { OutputPage, WheelInfo } from "output.slint";
-import { ManualPage, PresetInfo } from "manual.slint";
-import { AutoPage } from "auto.slint";
+import { OutputScreen, WheelInfo } from "output.slint";
+import { ManualPanel, PresetInfo } from "manual.slint";
+import { AutoPanel } from "auto.slint";
 import { ConsoleState, ConsoleRow, ConsoleSpan, ConsoleTabInfo } from "console.slint";
 
 export { Beacon, WheelInfo, PresetInfo, ConsoleState, ConsoleRow, ConsoleSpan, ConsoleTabInfo }
@@ -150,171 +152,172 @@ export component MainWindow inherits Window {
         changed has-focus => { if !self.has-focus { root.window-deactivated(); } }
     }
 
-    HorizontalLayout {
-        padding-top: root.inset-top;
-        padding-bottom: root.inset-bottom;
-        padding-left: root.inset-left;
-        padding-right: root.inset-right;
-        Rectangle {
-            if !root.connected: ConnectScreen {
-                beacons: root.beacons;
-                target <=> root.target;
-                status: root.connect-status;
-                status-color: root.connect-status-color;
-                connect(t, takeover) => { root.connect(t, takeover); }
-                connect-demo => { root.connect-demo(); }
-            }
-            if root.connected: Rectangle {
-                if root.page == 0: OutputPage {
-                    pose-text: root.band-pose;
-                    vel-text: root.band-vel;
-                    wheels: root.band-wheels;
-                    demo: root.demo;
-                    mode-text: root.band-mode;
-                    mode-color: root.band-mode-color;
-                    reason-text: root.band-reason;
-                    window-height: root.height;
-                    map-image: root.map-image;
-                    map-cx: root.map-cx;
-                    map-cy: root.map-cy;
-                    map-scale: root.map-scale;
-                    map-geometry(w, h) => { root.map-geometry(0, w, h); }
-                    map-panned(dx, dy) => { root.map-panned(0, dx, dy); }
-                    map-zoomed(f, x, y) => { root.map-zoomed(0, f, x, y); }
-                    map-fit => { root.map-fit(0); }
-                }
-                if root.page == 1: ManualPage {
-                    level <=> root.manual-level;
-                    field-frame <=> root.manual-field-frame;
-                    both <=> root.manual-both;
-                    presets: root.manual-presets;
-                    lift-reason: root.manual-lift-reason;
-                    left-info: root.manual-left-info;
-                    right-info: root.manual-right-info;
-                    left-suction: root.manual-left-suction;
-                    right-suction: root.manual-right-suction;
-                    reset-enabled: root.manual-reset-enabled;
-                    stopped: root.stopped;
-                    message: root.manual-message;
-                    speed-text: root.manual-speed-text;
-                    auto-active: root.mode == 1;
-                    auto-label: root.manual-auto-label;
-                    stick-moved(x, y) => { root.manual-stick(x, y); }
-                    slider-moved(s) => { root.manual-slider(s); }
-                    jog-pressed(side, dir) => { root.manual-jog(side, dir); }
-                    jog-released(s) => { root.manual-jog-released(s); }
-                    preset-pressed(side, i) => { root.manual-preset(side, i); }
-                    suction-toggled(side) => { root.manual-suction(side); }
-                    reset-pressed => { root.manual-reset-pressed(); }
-                    reset-confirmed => { root.manual-reset(); }
-                    cancel-auto => { root.manual-cancel-auto(); }
-                    changed level => { root.manual-options-changed(); }
-                    changed field-frame => { root.manual-options-changed(); }
-                    changed both => { root.manual-options-changed(); }
-                }
-                if root.page == 2: AutoPage {
-                    stopped: root.stopped;
-                    pick-gripper <=> root.auto-pick-gripper;
-                    place-gripper <=> root.auto-place-gripper;
-                    sel-block <=> root.auto-block;
-                    sel-column <=> root.auto-column;
-                    sel-row <=> root.auto-row;
-                    block-reason: root.auto-block-reason;
-                    task-active: root.auto-task-active;
-                    task-label: root.auto-task-label;
-                    task-step: root.auto-task-step;
-                    blocks: root.auto-blocks;
-                    cells: root.auto-cells;
-                    columns: root.auto-columns;
-                    rows: root.auto-rows;
-                    hold-left: root.auto-hold-left;
-                    hold-right: root.auto-hold-right;
-                    place-warning: root.auto-place-warning;
-                    memory-text: root.auto-memory-text;
-                    forget-enabled: root.auto-forget-enabled;
-                    paths: root.auto-paths;
-                    active-path: root.auto-active-path;
-                    tracker: root.auto-tracker;
-                    message: root.auto-message;
-                    message-ok: root.auto-message-ok;
-                    map-image: root.auto-map-image;
-                    map-cx: root.auto-map-cx;
-                    map-cy: root.auto-map-cy;
-                    map-scale: root.auto-map-scale;
-                    confirm-text: root.auto-confirm-text;
-                    confirm-active: root.auto-confirm-active;
-                    run-pick(g, b) => { root.auto-run-pick(g, b); }
-                    run-place(g, c, r) => { root.auto-run-place(g, c, r); }
-                    run-move(k) => { root.auto-run-move(k); }
-                    cancel => { root.auto-cancel(); }
-                    forget-pressed => { root.auto-forget-pressed(); }
-                    forget-confirmed => { root.auto-forget(); }
-                    start-path(n) => { root.auto-start-path(n); }
-                    stop-path => { root.auto-stop-path(); }
-                    toggle-tracker => { root.auto-toggle-tracker(); }
-                    map-geometry(w, h) => { root.map-geometry(1, w, h); }
-                    map-panned(dx, dy) => { root.map-panned(1, dx, dy); }
-                    map-zoomed(f, x, y) => { root.map-zoomed(1, f, x, y); }
-                    map-fit => { root.map-fit(1); }
-                    pose-dragging(x, y, yaw) => { root.auto-pose-dragging(x, y, yaw); }
-                    pose-picked(x, y, yaw) => { root.auto-pose-picked(x, y, yaw); }
-                    pose-cancelled => { root.auto-pose-cancelled(); }
-                    pose-confirm => { root.auto-pose-confirm(); }
-                    pose-dismiss => { root.auto-pose-dismiss(); }
-                }
-                if root.notice != "": Rectangle {
-                    y: parent.height - self.height;
-                    height: 40px;
-                    background: Theme.danger;
-                    Text { text: root.notice; color: #ffffff; font-size: Theme.font; horizontal-alignment: center; vertical-alignment: center; }
-                }
-            }
-        }
-        Strip {
-            width: Theme.strip-width;
-            page <=> root.page;
-            conn-text: root.conn-text;
-            conn-color: root.conn-color;
-            rtt-ms: root.rtt-ms;
-            stopped: root.stopped;
-            demo: root.demo;
-            connected: root.connected;
-            disconnect-pressed => { root.confirm-leave = true; }
-            mode-text: root.mode == 0 ? "手動" : root.mode == 1 ? "自動" : root.mode == 2 ? "停止" : "";
-            stop-pressed => { root.stop-pressed(); }
-            release-pressed => { root.release-pressed(); }
-        }
+    // The content area: the window minus the safe-area insets and the strip on the right edge.
+    property <length> cx: root.inset-left;
+    property <length> cy: root.inset-top;
+    property <length> cw: root.width - root.inset-left - root.inset-right - Theme.strip-width;
+    property <length> ch: root.height - root.inset-top - root.inset-bottom;
+
+    ConnectScreen {
+        x: root.cx;
+        y: root.cy;
+        width: root.cw;
+        height: root.ch;
+        visible: !root.connected;
+        beacons: root.beacons;
+        target <=> root.target;
+        status: root.connect-status;
+        status-color: root.connect-status-color;
+        connect(t, takeover) => { root.connect(t, takeover); }
+        connect-demo => { root.connect-demo(); }
     }
-    if root.confirm-leave: Rectangle {
-        background: #000000a0;
-        TouchArea { }
-        Rectangle {
-            width: 440px;
-            height: 160px;
-            background: Theme.panel;
-            border-radius: 12px;
-            VerticalLayout {
-                padding: 16px;
-                spacing: 16px;
-                Text { text: "切断して接続先を選びますか"; color: Theme.text; font-size: 20px; horizontal-alignment: center; vertical-alignment: center; }
-                HorizontalLayout {
-                    spacing: 16px;
-                    Rectangle {
-                        height: Theme.tap;
-                        background: Theme.panel-hi;
-                        border-radius: 8px;
-                        Text { text: "いいえ"; color: Theme.text; font-size: 18px; horizontal-alignment: center; vertical-alignment: center; }
-                        TouchArea { clicked => { root.confirm-leave = false; } }
-                    }
-                    Rectangle {
-                        height: Theme.tap;
-                        background: Theme.accent;
-                        border-radius: 8px;
-                        Text { text: "はい"; color: Theme.text; font-size: 18px; horizontal-alignment: center; vertical-alignment: center; }
-                        TouchArea { clicked => { root.confirm-leave = false; root.disconnect(); } }
-                    }
-                }
-            }
-        }
+
+    OutputScreen {
+        x: root.cx;
+        y: root.cy;
+        width: root.cw;
+        height: root.ch;
+        visible: root.connected;
+        pose-text: root.band-pose;
+        vel-text: root.band-vel;
+        wheels: root.band-wheels;
+        demo: root.demo;
+        mode-text: root.band-mode;
+        mode-color: root.band-mode-color;
+        reason-text: root.band-reason;
+        window-height: root.height;
+        map-image: root.map-image;
+        map-cx: root.map-cx;
+        map-cy: root.map-cy;
+        map-scale: root.map-scale;
+        map-geometry(w, h) => { root.map-geometry(0, w, h); }
+        map-panned(dx, dy) => { root.map-panned(0, dx, dy); }
+        map-zoomed(f, x, y) => { root.map-zoomed(0, f, x, y); }
+        map-fit => { root.map-fit(0); }
+    }
+
+    ManualPanel {
+        x: root.cx;
+        y: root.cy;
+        width: root.cw;
+        height: root.ch;
+        visible: root.connected && root.page == 1;
+        level <=> root.manual-level;
+        field-frame <=> root.manual-field-frame;
+        both <=> root.manual-both;
+        presets: root.manual-presets;
+        lift-reason: root.manual-lift-reason;
+        left-info: root.manual-left-info;
+        right-info: root.manual-right-info;
+        left-suction: root.manual-left-suction;
+        right-suction: root.manual-right-suction;
+        reset-enabled: root.manual-reset-enabled;
+        stopped: root.stopped;
+        message: root.manual-message;
+        speed-text: root.manual-speed-text;
+        auto-active: root.mode == 1;
+        auto-label: root.manual-auto-label;
+        stick-moved(x, y) => { root.manual-stick(x, y); }
+        slider-moved(s) => { root.manual-slider(s); }
+        jog-pressed(side, dir) => { root.manual-jog(side, dir); }
+        jog-released(s) => { root.manual-jog-released(s); }
+        preset-pressed(side, i) => { root.manual-preset(side, i); }
+        suction-toggled(side) => { root.manual-suction(side); }
+        reset-pressed => { root.manual-reset-pressed(); }
+        reset-confirmed => { root.manual-reset(); }
+        cancel-auto => { root.manual-cancel-auto(); }
+        changed level => { root.manual-options-changed(); }
+        changed field-frame => { root.manual-options-changed(); }
+        changed both => { root.manual-options-changed(); }
+    }
+
+    AutoPanel {
+        x: root.cx;
+        y: root.cy;
+        width: root.cw;
+        height: root.ch;
+        visible: root.connected && root.page == 2;
+        stopped: root.stopped;
+        pick-gripper <=> root.auto-pick-gripper;
+        place-gripper <=> root.auto-place-gripper;
+        sel-block <=> root.auto-block;
+        sel-column <=> root.auto-column;
+        sel-row <=> root.auto-row;
+        block-reason: root.auto-block-reason;
+        task-active: root.auto-task-active;
+        task-label: root.auto-task-label;
+        task-step: root.auto-task-step;
+        blocks: root.auto-blocks;
+        cells: root.auto-cells;
+        columns: root.auto-columns;
+        rows: root.auto-rows;
+        hold-left: root.auto-hold-left;
+        hold-right: root.auto-hold-right;
+        place-warning: root.auto-place-warning;
+        memory-text: root.auto-memory-text;
+        forget-enabled: root.auto-forget-enabled;
+        paths: root.auto-paths;
+        active-path: root.auto-active-path;
+        tracker: root.auto-tracker;
+        message: root.auto-message;
+        message-ok: root.auto-message-ok;
+        map-image: root.auto-map-image;
+        map-cx: root.auto-map-cx;
+        map-cy: root.auto-map-cy;
+        map-scale: root.auto-map-scale;
+        confirm-text: root.auto-confirm-text;
+        confirm-active: root.auto-confirm-active;
+        run-pick(g, b) => { root.auto-run-pick(g, b); }
+        run-place(g, c, r) => { root.auto-run-place(g, c, r); }
+        run-move(k) => { root.auto-run-move(k); }
+        cancel => { root.auto-cancel(); }
+        forget-pressed => { root.auto-forget-pressed(); }
+        forget-confirmed => { root.auto-forget(); }
+        start-path(n) => { root.auto-start-path(n); }
+        stop-path => { root.auto-stop-path(); }
+        toggle-tracker => { root.auto-toggle-tracker(); }
+        map-geometry(w, h) => { root.map-geometry(1, w, h); }
+        map-panned(dx, dy) => { root.map-panned(1, dx, dy); }
+        map-zoomed(f, x, y) => { root.map-zoomed(1, f, x, y); }
+        map-fit => { root.map-fit(1); }
+        pose-dragging(x, y, yaw) => { root.auto-pose-dragging(x, y, yaw); }
+        pose-picked(x, y, yaw) => { root.auto-pose-picked(x, y, yaw); }
+        pose-cancelled => { root.auto-pose-cancelled(); }
+        pose-confirm => { root.auto-pose-confirm(); }
+        pose-dismiss => { root.auto-pose-dismiss(); }
+    }
+
+    EdgeStrip {
+        x: root.width - root.inset-right - Theme.strip-width;
+        y: root.inset-top;
+        width: Theme.strip-width;
+        height: root.ch;
+        page <=> root.page;
+        conn-text: root.conn-text;
+        conn-color: root.conn-color;
+        rtt-ms: root.rtt-ms;
+        stopped: root.stopped;
+        demo: root.demo;
+        connected: root.connected;
+        disconnect-pressed => { root.confirm-leave = true; }
+        mode-text: root.mode == 0 ? "手動" : root.mode == 1 ? "自動" : root.mode == 2 ? "停止" : "";
+        stop-pressed => { root.stop-pressed(); }
+        release-pressed => { root.release-pressed(); }
+    }
+    NoticeBand {
+        x: root.cx;
+        y: root.cy + root.ch - self.height;
+        width: root.cw;
+        visible: root.notice != "";
+        text: root.notice;
+    }
+    LeaveDialog {
+        x: 0;
+        y: 0;
+        width: root.width;
+        height: root.height;
+        visible: root.confirm-leave;
+        cancel => { root.confirm-leave = false; }
+        accept => { root.confirm-leave = false; root.disconnect(); }
     }
 }
