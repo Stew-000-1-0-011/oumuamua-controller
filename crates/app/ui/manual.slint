@@ -1,0 +1,369 @@
+import { Theme } from "theme.slint";
+
+export struct PresetInfo { name: string, enabled: bool }
+
+// A plain button; `active` shows a latched state.
+component Btn inherits Rectangle {
+    in property <string> label;
+    in property <bool> active: false;
+    in property <bool> enabled: true;
+    in property <color> tint: Theme.accent;
+    in property <length> font: Theme.font;
+    callback clicked();
+    min-height: Theme.tap - 4px;
+    min-width: Theme.tap;
+    border-radius: 8px;
+    background: !root.enabled ? Theme.panel
+        : root.active ? root.tint
+        : ta.pressed ? Theme.panel-hi.brighter(0.3)
+        : Theme.panel-hi;
+    Text {
+        text: root.label;
+        color: root.enabled ? Theme.text : Theme.dim;
+        font-size: root.font;
+        font-weight: root.active ? 700 : 400;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+    ta := TouchArea { enabled: root.enabled; clicked => { root.clicked(); } }
+}
+
+// 上 / 下: acts only while held. Each press and release is reported once.
+component JogButton inherits Rectangle {
+    in property <string> label;
+    in property <bool> enabled: true;
+    callback pressed();
+    callback released();
+    min-height: Theme.tap;
+    min-width: Theme.tap;
+    border-radius: 8px;
+    background: !root.enabled ? Theme.panel : ta.pressed ? Theme.accent : Theme.panel-hi;
+    Text {
+        text: root.label;
+        color: root.enabled ? Theme.text : Theme.dim;
+        font-size: 18px;
+        font-weight: 700;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+    ta := TouchArea {
+        enabled: root.enabled;
+        pointer-event(e) => {
+            if e.button != PointerEventButton.left { return; }
+            if e.kind == PointerEventKind.down { root.pressed(); }
+            else if e.kind == PointerEventKind.up || e.kind == PointerEventKind.cancel { root.released(); }
+        }
+    }
+}
+
+// Translation stick. Reports the deflection (-1..1, screen right / screen down) while a finger
+// is down and (0, 0) the moment it lifts.
+component Stick inherits Rectangle {
+    in property <bool> enabled: true;
+    callback moved(float, float);
+    property <length> d: Math.min(self.width, self.height);
+    property <length> knob: 72px;
+    property <length> reach: (root.d - root.knob) / 2;
+    property <float> kx: 0;
+    property <float> ky: 0;
+
+    pure function clamp1(v: float) -> float { return Math.max(-1, Math.min(1, v)); }
+
+    Rectangle {
+        width: root.d;
+        height: root.d;
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+        border-radius: self.width / 2;
+        background: Theme.panel;
+        border-width: 2px;
+        border-color: Theme.panel-hi;
+        Rectangle {
+            width: root.knob;
+            height: root.knob;
+            border-radius: root.knob / 2;
+            background: root.enabled ? Theme.accent : Theme.panel-hi;
+            x: (parent.width - self.width) / 2 + root.kx * root.reach;
+            y: (parent.height - self.height) / 2 + root.ky * root.reach;
+        }
+    }
+    ta := TouchArea {
+        enabled: root.enabled;
+        pointer-event(e) => {
+            if e.button != PointerEventButton.left && e.button != PointerEventButton.other { return; }
+            if e.kind == PointerEventKind.up || e.kind == PointerEventKind.cancel {
+                root.kx = 0;
+                root.ky = 0;
+                root.moved(0, 0);
+            } else if e.kind == PointerEventKind.down {
+                root.kx = root.clamp1((self.mouse-x - root.width / 2) / root.reach);
+                root.ky = root.clamp1((self.mouse-y - root.height / 2) / root.reach);
+                root.moved(root.kx, root.ky);
+            }
+        }
+        moved => {
+            if !self.pressed { return; }
+            root.kx = root.clamp1((self.mouse-x - root.width / 2) / root.reach);
+            root.ky = root.clamp1((self.mouse-y - root.height / 2) / root.reach);
+            root.moved(root.kx, root.ky);
+        }
+    }
+}
+
+// Horizontal rotation slider; springs back to 0 on release.
+component Slider inherits Rectangle {
+    in property <bool> enabled: true;
+    callback moved(float);
+    property <length> knob: 64px;
+    property <length> reach: (self.width - root.knob) / 2;
+    property <float> k: 0;
+    pure function clamp1(v: float) -> float { return Math.max(-1, Math.min(1, v)); }
+
+    Rectangle {
+        height: root.knob;
+        y: (parent.height - self.height) / 2;
+        border-radius: root.knob / 2;
+        background: Theme.panel;
+        border-width: 2px;
+        border-color: Theme.panel-hi;
+        Rectangle { width: 2px; height: parent.height * 0.5; x: parent.width / 2; y: parent.height * 0.25; background: Theme.dim; }
+        Rectangle {
+            width: root.knob;
+            height: root.knob;
+            border-radius: root.knob / 2;
+            background: root.enabled ? Theme.accent : Theme.panel-hi;
+            x: (parent.width - self.width) / 2 + root.k * root.reach;
+        }
+    }
+    ta := TouchArea {
+        enabled: root.enabled;
+        pointer-event(e) => {
+            if e.button != PointerEventButton.left && e.button != PointerEventButton.other { return; }
+            if e.kind == PointerEventKind.up || e.kind == PointerEventKind.cancel {
+                root.k = 0;
+                root.moved(0);
+            } else if e.kind == PointerEventKind.down {
+                root.k = root.clamp1((self.mouse-x - root.width / 2) / root.reach);
+                root.moved(root.k);
+            }
+        }
+        moved => {
+            if !self.pressed { return; }
+            root.k = root.clamp1((self.mouse-x - root.width / 2) / root.reach);
+            root.moved(root.k);
+        }
+    }
+}
+
+// One lift + suction column. `side` 0 is left, 1 is right.
+component LiftColumn inherits Rectangle {
+    in property <string> title;
+    in property <string> info;
+    in property <int> side;
+    in property <[PresetInfo]> presets;
+    in property <bool> suction;
+    callback jog-pressed(int);
+    callback jog-released();
+    callback preset(int);
+    callback suction-toggled();
+
+    background: Theme.panel;
+    border-radius: 8px;
+    VerticalLayout {
+        padding: 6px;
+        spacing: 4px;
+        HorizontalLayout {
+            spacing: 6px;
+            Text { text: root.title; color: Theme.text; font-size: Theme.font; font-weight: 700; vertical-alignment: center; }
+            Text { text: root.info; color: Theme.dim; font-size: 13px; vertical-alignment: center; overflow: elide; }
+        }
+        HorizontalLayout {
+            spacing: 6px;
+            JogButton { label: "上"; pressed => { root.jog-pressed(1); } released => { root.jog-released(); } }
+            JogButton { label: "下"; pressed => { root.jog-pressed(-1); } released => { root.jog-released(); } }
+        }
+        HorizontalLayout {
+            spacing: 4px;
+            for p[i] in root.presets: Btn {
+                label: p.name;
+                enabled: p.enabled;
+                font: 14px;
+                min-width: 40px;
+                clicked => { root.preset(i); }
+            }
+        }
+        Btn {
+            label: root.suction ? "吸引 入" : "吸引 切";
+            active: root.suction;
+            tint: Theme.ok;
+            clicked => { root.suction-toggled(); }
+        }
+    }
+}
+
+export component ManualPage inherits Rectangle {
+    background: Theme.bg;
+    // 0 低, 1 中, 2 高
+    in-out property <int> level: 0;
+    in-out property <bool> field-frame: false;
+    in-out property <bool> both: false;
+    in property <[PresetInfo]> presets;
+    in property <string> lift-reason;
+    in property <string> left-info: "高さ —  目標 —";
+    in property <string> right-info: "高さ —  目標 —";
+    in property <bool> left-suction: false;
+    in property <bool> right-suction: false;
+    in property <bool> reset-enabled: true;
+    in property <string> message;
+    in property <bool> auto-active: false;
+    in property <string> auto-label;
+    in property <string> speed-text;
+
+    callback stick-moved(float, float);
+    callback slider-moved(float);
+    callback jog-pressed(int, int);
+    callback jog-released();
+    callback preset-pressed(int, int);
+    callback suction-toggled(int);
+    callback reset-confirmed();
+    callback cancel-auto();
+
+    // 長押し: the timer fires once after 1 s of an uninterrupted press.
+    property <bool> reset-armed: false;
+    reset-timer := Timer {
+        interval: 1s;
+        running: root.reset-armed && root.reset-enabled;
+        triggered => {
+            root.reset-armed = false;
+            root.reset-confirmed();
+        }
+    }
+
+    HorizontalLayout {
+        padding: 8px;
+        spacing: 8px;
+        VerticalLayout {
+            width: parent.width * 0.26;
+            Text { text: "並進"; color: Theme.dim; font-size: 14px; horizontal-alignment: center; }
+            Stick {
+                enabled: !root.auto-active;
+                moved(x, y) => { root.stick-moved(x, y); }
+            }
+        }
+        VerticalLayout {
+            spacing: 6px;
+            alignment: start;
+            HorizontalLayout {
+                spacing: 6px;
+                height: Theme.tap;
+                Btn { label: "低"; active: root.level == 0; clicked => { root.level = 0; } }
+                Btn { label: "中"; active: root.level == 1; clicked => { root.level = 1; } }
+                Btn { label: "高"; active: root.level == 2; clicked => { root.level = 2; } }
+                Btn { label: "ロボット"; active: !root.field-frame; font: 14px; clicked => { root.field-frame = false; } }
+                Btn { label: "フィールド"; active: root.field-frame; font: 14px; clicked => { root.field-frame = true; } }
+            }
+            Text { text: root.speed-text; color: Theme.dim; font-size: 13px; horizontal-alignment: center; }
+            HorizontalLayout {
+                spacing: 6px;
+                LiftColumn {
+                    title: "左";
+                    side: 0;
+                    info: root.left-info;
+                    presets: root.presets;
+                    suction: root.left-suction;
+                    jog-pressed(d) => { root.jog-pressed(0, d); }
+                    jog-released => { root.jog-released(); }
+                    preset(i) => { root.preset-pressed(0, i); }
+                    suction-toggled => { root.suction-toggled(0); }
+                }
+                LiftColumn {
+                    title: "右";
+                    side: 1;
+                    info: root.right-info;
+                    presets: root.presets;
+                    suction: root.right-suction;
+                    jog-pressed(d) => { root.jog-pressed(1, d); }
+                    jog-released => { root.jog-released(); }
+                    preset(i) => { root.preset-pressed(1, i); }
+                    suction-toggled => { root.suction-toggled(1); }
+                }
+            }
+            Text {
+                text: root.lift-reason;
+                color: Theme.warn;
+                font-size: 13px;
+                horizontal-alignment: center;
+                visible: root.lift-reason != "";
+            }
+            HorizontalLayout {
+                spacing: 6px;
+                height: Theme.tap;
+                Btn { label: "両方"; active: root.both; clicked => { root.both = !root.both; } }
+                Rectangle {
+                    min-height: Theme.tap - 4px;
+                    border-radius: 8px;
+                    clip: true;
+                    background: root.reset-enabled ? Theme.panel-hi : Theme.panel;
+                    Rectangle {
+                        x: 0;
+                        width: root.reset-armed && root.reset-enabled ? parent.width : 0px;
+                        background: Theme.warn;
+                        animate width { duration: root.reset-armed ? 1s : 0ms; easing: linear; }
+                    }
+                    Text {
+                        text: root.reset-enabled ? "リセット(1 秒長押し)" : "動作中はリセット不可";
+                        color: root.reset-enabled ? (root.reset-armed ? #000000 : Theme.text) : Theme.dim;
+                        font-size: 14px;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
+                    TouchArea {
+                        enabled: root.reset-enabled;
+                        pointer-event(e) => {
+                            if e.button != PointerEventButton.left { return; }
+                            if e.kind == PointerEventKind.down { root.reset-armed = true; }
+                            else if e.kind == PointerEventKind.up || e.kind == PointerEventKind.cancel { root.reset-armed = false; }
+                        }
+                    }
+                }
+            }
+            Text {
+                text: root.message;
+                color: Theme.warn;
+                font-size: 13px;
+                horizontal-alignment: center;
+                wrap: word-wrap;
+            }
+        }
+        VerticalLayout {
+            width: parent.width * 0.26;
+            Text { text: "旋回"; color: Theme.dim; font-size: 14px; horizontal-alignment: center; }
+            Slider {
+                enabled: !root.auto-active;
+                moved(s) => { root.slider-moved(s); }
+            }
+        }
+    }
+
+    if root.auto-active: Rectangle {
+        background: #12161cf4;
+        TouchArea { }
+        VerticalLayout {
+            alignment: center;
+            spacing: 10px;
+            Text { text: "自動走行中"; color: Theme.text; font-size: 28px; font-weight: 700; horizontal-alignment: center; }
+            Text { text: root.auto-label; color: Theme.dim; font-size: 18px; horizontal-alignment: center; }
+            HorizontalLayout {
+                alignment: center;
+                Btn {
+                    label: "手動制御へ";
+                    active: true;
+                    min-width: 200px;
+                    min-height: 56px;
+                    font: 20px;
+                    clicked => { root.cancel-auto(); }
+                }
+            }
+        }
+    }
+}

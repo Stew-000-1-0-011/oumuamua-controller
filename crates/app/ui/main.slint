@@ -3,11 +3,11 @@ import { Theme } from "theme.slint";
 import { Strip } from "strip.slint";
 import { ConnectScreen, Beacon } from "connect.slint";
 import { OutputPage, WheelInfo } from "output.slint";
+import { ManualPage, PresetInfo } from "manual.slint";
 
-export { Beacon, WheelInfo }
+export { Beacon, WheelInfo, PresetInfo }
 
-// Placeholder pages; Tasks 13-16 replace the bodies.
-component ManualPage inherits Rectangle { background: Theme.bg; Text { text: "手動"; color: Theme.dim; } }
+// Placeholder pages; Tasks 14-16 replace the bodies.
 component AutoPage inherits Rectangle { background: Theme.bg; Text { text: "自動"; color: Theme.dim; } }
 
 // Properties are set by glue.rs; later tasks add more but keep these stable.
@@ -49,7 +49,32 @@ export component MainWindow inherits Window {
     in property <float> map-cy;
     in property <float> map-scale: 50;
 
+    // Manual page. Selections live here so they survive page switches.
+    in-out property <int> manual-level: 0;
+    in-out property <bool> manual-field-frame: false;
+    in-out property <bool> manual-both: false;
+    in property <[PresetInfo]> manual-presets;
+    in property <string> manual-lift-reason;
+    in property <string> manual-left-info: "高さ —  目標 —";
+    in property <string> manual-right-info: "高さ —  目標 —";
+    in property <bool> manual-left-suction: false;
+    in property <bool> manual-right-suction: false;
+    in property <bool> manual-reset-enabled: true;
+    in property <string> manual-message;
+    in property <string> manual-speed-text;
+    in property <string> manual-auto-label;
+
     callback connect(string, bool);
+    callback manual-stick(float, float);
+    callback manual-slider(float);
+    callback manual-jog(int, int);
+    callback manual-jog-released();
+    callback manual-preset(int, int);
+    callback manual-suction(int);
+    callback manual-reset();
+    callback manual-cancel-auto();
+    // Level / frame / both changed on the page.
+    callback manual-options-changed();
     // Map pane 0 (output page); pane id first so more panes can share the Rust side.
     callback map-geometry(int, length, length);
     callback map-panned(int, length, length);
@@ -93,7 +118,33 @@ export component MainWindow inherits Window {
                     map-zoomed(f, x, y) => { root.map-zoomed(0, f, x, y); }
                     map-fit => { root.map-fit(0); }
                 }
-                if root.page == 1: ManualPage { }
+                if root.page == 1: ManualPage {
+                    level <=> root.manual-level;
+                    field-frame <=> root.manual-field-frame;
+                    both <=> root.manual-both;
+                    presets: root.manual-presets;
+                    lift-reason: root.manual-lift-reason;
+                    left-info: root.manual-left-info;
+                    right-info: root.manual-right-info;
+                    left-suction: root.manual-left-suction;
+                    right-suction: root.manual-right-suction;
+                    reset-enabled: root.manual-reset-enabled;
+                    message: root.manual-message;
+                    speed-text: root.manual-speed-text;
+                    auto-active: root.mode == 1;
+                    auto-label: root.manual-auto-label;
+                    stick-moved(x, y) => { root.manual-stick(x, y); }
+                    slider-moved(s) => { root.manual-slider(s); }
+                    jog-pressed(side, dir) => { root.manual-jog(side, dir); }
+                    jog-released => { root.manual-jog-released(); }
+                    preset-pressed(side, i) => { root.manual-preset(side, i); }
+                    suction-toggled(side) => { root.manual-suction(side); }
+                    reset-confirmed => { root.manual-reset(); }
+                    cancel-auto => { root.manual-cancel-auto(); }
+                    changed level => { root.manual-options-changed(); }
+                    changed field-frame => { root.manual-options-changed(); }
+                    changed both => { root.manual-options-changed(); }
+                }
                 if root.page == 2: AutoPage { }
                 if root.notice != "": Rectangle {
                     y: parent.height - self.height;

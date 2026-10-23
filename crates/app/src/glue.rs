@@ -1,8 +1,9 @@
 //! Connects the Slint window to the link: callbacks in, a 33 ms timer out.
 
+use crate::manual::{self, Manual};
 use crate::model::{AppModel, ConnState, StopLatch};
 use crate::map::{self, PaneState, Scene};
-use crate::{Beacon, MainWindow, WheelInfo, storage};
+use crate::{Beacon, MainWindow, PresetInfo, WheelInfo, storage};
 use link::{Client, ControlInput, Discovery, LinkEvent};
 use proto::{Mode, Msg};
 use slint::{ComponentHandle, Model, ModelRc, SharedString, Timer, TimerMode, VecModel};
@@ -81,6 +82,13 @@ struct Glue {
     scene_dirty: bool,
     was_visible: bool,
     bounds: [f64; 4],
+    /// Manual page inputs; copied into `control` by `sync_manual`.
+    manual: Manual,
+    /// Requests sent from the manual page whose RESULT we still show: `(req, is_reset)`.
+    manual_reqs: Vec<(u32, bool)>,
+    manual_message: String,
+    /// Last preset list given to the window, to avoid rebuilding the model every tick.
+    presets_shown: Vec<(String, bool)>,
 }
 
 impl Glue {
@@ -213,6 +221,168 @@ impl Glue {
         }.into());
     }
 
+    fn levels(&self) -> [(f64, f64); 3] {
+        self.model.config().map_or(manual::DEFAULT_LEVELS, |c| c.speed_levels)
+    }
+
+    /// Motion may be sent only while the manual page is showing on a live link and the robot
+    /// is not running something automatic.
+    fn manual_allowed(&self) -> bool {
+        let Some(w) = self.window.upgrade() else { return false };
+        w.get_connected()
+            && self.client.is_some()
+            && w.get_page() == 1
+            && self.model.state().is_some_and(|s| s.mode != Mode::Auto)
+    }
+
+    /// Copies the manual inputs into `control` (never touching `estop`) and pushes on change.
+    /// When the page may not drive the robot, the held inputs are dropped, so they cannot
+    /// resume by themselves when it may again.
+    fn sync_manual(&mut self) {
+        let allowed = self.manual_allowed();
+        if !allowed {
+            self.manual.release_all();
+        }
+        let levels = self.levels();
+        if self.manual.apply(&mut self.control, &levels, allowed) {
+            self.push_control();
+        }
+    }
+
+    fn manual_stick(&mut self, dx: f32, dy: f32) {
+        if self.manual_allowed() {
+            self.manual.set_stick(dx, dy);
+        }
+        self.sync_manual();
+    }
+
+    fn manual_slider(&mut self, s: f32) {
+        if self.manual_allowed() {
+            self.manual.set_slider(s);
+        }
+        self.sync_manual();
+    }
+
+    fn manual_jog(&mut self, side: i32, dir: i32) {
+        if self.manual_allowed() {
+            self.manual.jog_press(side.clamp(0, 1) as u8, dir.clamp(-1, 1) as i8);
+        }
+        self.sync_manual();
+    }
+
+    fn manual_jog_released(&mut self) {
+        self.manual.jog_release();
+        self.sync_manual();
+    }
+
+    fn manual_options(&mut self) {
+        let Some(w) = self.window.upgrade() else { return };
+        self.manual.level = w.get_manual_level().clamp(0, 2) as usize;
+        self.manual.field_frame = w.get_manual_field_frame();
+        self.manual.both = w.get_manual_both();
+        self.sync_manual();
+    }
+
+    /// Sends a request from the manual page and remembers it to show its RESULT.
+    fn manual_send(&mut self, is_reset: bool, build: impl FnOnce(u32) -> Msg) {
+        let Some(c) = &self.client else { return };
+        let req = c.next_req();
+        c.send(build(req));
+        self.manual_reqs.push((req, is_reset));
+        self.manual_message.clear();
+    }
+
+    fn manual_preset(&mut self, side: i32, idx: i32) {
+        if !self.manual_allowed() {
+            return;
+        }
+        let Some(cfg) = self.model.config() else { return };
+        let Some((_, h)) = usize::try_from(idx).ok().and_then(|i| cfg.lift_presets.get(i)) else { return };
+        let h = *h;
+        if !manual::preset_enabled(h, cfg.lift_max) {
+            return;
+        }
+        let gripper = manual::gripper_id(side.clamp(0, 1) as u8, self.manual.both);
+        self.manual_send(false, |req| Msg::LiftTo { req, gripper, height: h });
+    }
+
+    fn manual_suction(&mut self, side: i32) {
+        if !self.manual_allowed() {
+            return;
+        }
+        let side = side.clamp(0, 1) as u8;
+        let gripper = manual::gripper_id(side, self.manual.both);
+        let on_of = |i: usize| self.model.state().and_then(|s| s.grippers[i]).is_some_and(|g| g.suction);
+        let on = match gripper {
+            2 => !(on_of(0) && on_of(1)),
+            i => !on_of(usize::from(i)),
+        };
+        self.manual_send(false, |req| Msg::SetSuction { req, gripper, on });
+    }
+
+    fn lift_moving(&self) -> bool {
+        self.model.state().is_some_and(|s| s.grippers.iter().flatten().any(|g| g.moving))
+    }
+
+    fn manual_reset(&mut self) {
+        // The button is held for a second, during which a lift may have started to move.
+        if !self.manual_allowed() || self.lift_moving() {
+            return;
+        }
+        self.manual_send(true, |req| Msg::LiftZero { req, gripper: 2 });
+    }
+
+    fn manual_cancel(&mut self) {
+        self.manual_send(false, |req| Msg::Cancel { req });
+    }
+
+    /// Shows the RESULT of manual-page requests: failures, and the reset outcome.
+    fn collect_manual_results(&mut self) {
+        let results = &self.model.results;
+        let message = &mut self.manual_message;
+        self.manual_reqs.retain(|&(req, is_reset)| {
+            let Some((_, ok, msg)) = results.iter().find(|r| r.0 == req) else { return true };
+            if !ok {
+                *message = if msg.is_empty() { "失敗しました".to_owned() } else { msg.clone() };
+            } else if is_reset {
+                *message = if msg.is_empty() { "0 点にしました".to_owned() } else { msg.clone() };
+            }
+            false
+        });
+    }
+
+    fn refresh_manual(&mut self, w: &MainWindow) {
+        let state = self.model.state();
+        let grippers = state.map_or([None, None], |s| s.grippers);
+        w.set_manual_left_info(manual::height_text(grippers[0].as_ref()).into());
+        w.set_manual_right_info(manual::height_text(grippers[1].as_ref()).into());
+        w.set_manual_left_suction(grippers[0].is_some_and(|g| g.suction));
+        w.set_manual_right_suction(grippers[1].is_some_and(|g| g.suction));
+        w.set_manual_reset_enabled(!self.lift_moving());
+        let (lv, wv) = self.manual.level_pair(&self.levels());
+        w.set_manual_speed_text(format!("並進 {lv:.1} m/s  旋回 {wv:.1} rad/s").into());
+        w.set_manual_auto_label(
+            manual::auto_label(state.and_then(|s| s.task.as_ref()), state.and_then(|s| s.path.as_ref())).into(),
+        );
+        w.set_manual_message(self.manual_message.as_str().into());
+        let (presets, reason) = match self.model.config() {
+            Some(c) => {
+                let p: Vec<(String, bool)> =
+                    c.lift_presets.iter().map(|(n, h)| (n.clone(), manual::preset_enabled(*h, c.lift_max))).collect();
+                let reason = if p.iter().any(|(_, ok)| !ok) { manual::lift_limit_reason(c.lift_max) } else { String::new() };
+                (p, reason)
+            }
+            None => (Vec::new(), String::new()),
+        };
+        w.set_manual_lift_reason(reason.into());
+        if presets != self.presets_shown {
+            let items: Vec<PresetInfo> =
+                presets.iter().map(|(n, ok)| PresetInfo { name: n.as_str().into(), enabled: *ok }).collect();
+            w.set_manual_presets(ModelRc::from(Rc::new(VecModel::from(items))));
+            self.presets_shown = presets;
+        }
+    }
+
     fn push_control(&self) {
         if let Some(c) = &self.client {
             c.set_control(self.control);
@@ -235,6 +405,9 @@ impl Glue {
         self.latch.on_link_reset();
         // The emergency-stop latch survives reconnects; motion inputs restart from zero.
         self.control = ControlInput { estop: self.latch.estop(), ..ControlInput::default() };
+        self.manual.release_all();
+        self.manual_reqs.clear();
+        self.manual_message.clear();
         let (client, rx) = Client::start(addr, self.name.clone(), takeover);
         self.client = Some(client);
         self.push_control();
@@ -297,7 +470,15 @@ impl Glue {
                 self.notice = format!("解除できません: {msg}");
             }
         }
+        self.collect_manual_results();
+        self.sync_manual();
         self.refresh();
+        if let Some(w) = self.window.upgrade()
+            && w.get_connected()
+            && w.get_page() == 1
+        {
+            self.refresh_manual(&w);
+        }
         self.render_maps(got_events);
     }
 
@@ -379,6 +560,10 @@ pub fn start(window: &MainWindow) -> Rc<RefCell<GlueHandle>> {
         scene_dirty: true,
         was_visible: false,
         bounds: map::field_bounds(None),
+        manual: Manual::default(),
+        manual_reqs: Vec::new(),
+        manual_message: String::new(),
+        presets_shown: Vec::new(),
     }));
     {
         let g = glue.clone();
@@ -411,6 +596,24 @@ pub fn start(window: &MainWindow) -> Rc<RefCell<GlueHandle>> {
             g.map_fit(id);
             g.render_maps(false);
         });
+        let g = glue.clone();
+        window.on_manual_stick(move |x, y| g.borrow_mut().manual_stick(x, y));
+        let g = glue.clone();
+        window.on_manual_slider(move |s| g.borrow_mut().manual_slider(s));
+        let g = glue.clone();
+        window.on_manual_jog(move |side, dir| g.borrow_mut().manual_jog(side, dir));
+        let g = glue.clone();
+        window.on_manual_jog_released(move || g.borrow_mut().manual_jog_released());
+        let g = glue.clone();
+        window.on_manual_options_changed(move || g.borrow_mut().manual_options());
+        let g = glue.clone();
+        window.on_manual_preset(move |side, i| g.borrow_mut().manual_preset(side, i));
+        let g = glue.clone();
+        window.on_manual_suction(move |side| g.borrow_mut().manual_suction(side));
+        let g = glue.clone();
+        window.on_manual_reset(move || g.borrow_mut().manual_reset());
+        let g = glue.clone();
+        window.on_manual_cancel_auto(move || g.borrow_mut().manual_cancel());
         let g = glue.clone();
         window.on_stop_pressed(move || {
             let mut g = g.borrow_mut();

@@ -1,5 +1,6 @@
 pub mod font;
 pub mod glue;
+pub mod manual;
 pub mod map;
 pub mod model;
 pub mod storage;
