@@ -71,7 +71,16 @@ def test_close_kills_bash(rig):
     sm, rec = rig
     sm.open("t1")
     pid = sm._tabs["t1"].pid
+    t0 = time.monotonic()
     assert sm.close("t1")[0]
+    assert time.monotonic() - t0 < 0.1  # does not wait for bash
+    end = time.monotonic() + 3.0
+    while time.monotonic() < end:  # reaped by poll(), not by close()
+        sm.poll(0.02)
+        try:
+            os.kill(pid, 0)
+        except OSError:
+            break
     with pytest.raises(OSError):
         os.kill(pid, 0)
     assert sm.tabs() == []
@@ -181,3 +190,27 @@ def test_open_returns_false_when_log_unwritable(tmp_path, env):
     ok, reason = sm.open("t")
     assert not ok and reason
     assert sm.tabs() == []
+
+
+def test_write_does_not_block_when_pty_is_full(rig):
+    sm, rec = rig
+    sm.open("t1")
+    sm.write("t1", b"sleep 5\n")
+    t0 = time.monotonic()
+    ok = True
+    for _ in range(6):
+        ok = sm.write("t1", b"x" * 8192 + b"\n")[0] and ok
+    assert time.monotonic() - t0 < 0.2
+    sm.write("t1", b"\x03")
+
+
+def test_close_all_reaps_everything(tmp_path, env):
+    rec = Rec()
+    sm = ShellManager(tmp_path / "log", rec.on_output, rec.on_closed, env=env)
+    sm.open("a")
+    sm.open("b")
+    pids = [t.pid for t in sm._tabs.values()]
+    sm.close_all()
+    for pid in pids:
+        with pytest.raises(OSError):
+            os.kill(pid, 0)

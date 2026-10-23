@@ -12,6 +12,7 @@ class FakeRosIo:
         self.task_done = None
         self.snap = Snapshot()
         self.names = []
+        self.path_done = None
         self.on_run_task = None  # hook called at the start of run_task
 
     def _finish(self, name, done):
@@ -28,9 +29,14 @@ class FakeRosIo:
         self.calls.append(("stop_path",))
         self._finish("stop_path", done)
 
-    def start_path(self, name, done):
+    def start_path(self, name, started, done):
         self.calls.append(("start_path", name))
-        self._finish("start_path", done)
+        self.path_done = done  # call it to end the path
+        msg = self.fail.get("start_path")
+        if msg is not None:
+            done(False, msg)
+        else:
+            self._finish("start_path", started)
 
     def set_tracker(self, on, done):
         self.calls.append(("set_tracker", on))

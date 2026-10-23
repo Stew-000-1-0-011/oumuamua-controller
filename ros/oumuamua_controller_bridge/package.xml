@@ -17,6 +17,7 @@
   <exec_depend>mini_shirasu_ros</exec_depend>
   <exec_depend>gripper</exec_depend>
   <exec_depend>task_commander</exec_depend>
+  <exec_depend>path_follower</exec_depend>
   <exec_depend>python3-msgpack</exec_depend>
 
   <test_depend>python3-pytest</test_depend>

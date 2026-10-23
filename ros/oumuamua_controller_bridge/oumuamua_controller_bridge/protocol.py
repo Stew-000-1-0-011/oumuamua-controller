@@ -91,3 +91,11 @@ def unpack_points(data: bytes) -> list:
     n = len(data) // 4
     flat = struct.unpack(f"<{n * 2}h", data[: n * 4])
     return [(flat[2 * i] / 1000.0, flat[2 * i + 1] / 1000.0) for i in range(n)]
+
+
+def shell_opened_msgs(tab: str, replay: bytes) -> list:
+    """SHELL_OPENED plus SHELL_OUTPUT chunks so that every REL fits one datagram."""
+    msgs = [[SHELL_OPENED, tab, replay[:MAX_SHELL_CHUNK]]]
+    for i in range(MAX_SHELL_CHUNK, len(replay), MAX_SHELL_CHUNK):
+        msgs.append([SHELL_OUTPUT, tab, replay[i:i + MAX_SHELL_CHUNK]])
+    return msgs

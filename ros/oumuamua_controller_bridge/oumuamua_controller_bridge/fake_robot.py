@@ -2,8 +2,7 @@
 
     python3 -m oumuamua_controller_bridge.fake_robot [--port 47800]
 
-Simplifications: cmd_vel is integrated on a plane (no wall collisions); path following completes
-at once; a task walks through its stages one second each and then succeeds; lifts move at
+Simplifications: cmd_vel is integrated on a plane (no wall collisions); a path run is accepted at once and finishes after 3 s; a task walks through its stages one second each and then succeeds; lifts move at
 0.05 m/s; suction switches instantly; the LiDAR casts a ray every 1 degree against the outer field
 walls only (obstacles are not hit). The model advances whenever snapshot() is called.
 """
@@ -21,6 +20,7 @@ DEFAULT_CONFIG = DEFAULTS
 
 LIFT_SPEED = 0.05  # m/s
 STAGE_S = 1.0
+PATH_RUN_S = 3.0
 MAX_RANGE = 30.0
 PATHS = ["slalom_forward", "slalom_backward"]
 TASK_STAGES = {0: ["ブロックへ移動", "吸着", "持ち上げ"], 5: ["棚へ移動", "差し込み", "解放"]}
@@ -55,6 +55,7 @@ class FakeRosIo:
         self._holding = [False, False]
         self._picked, self._placed = [], []
         self._path = []
+        self._follow = None  # dict(t0, done) while a path run is active
 
     # -- model ----------------------------------------------------------
     def _advance(self):
@@ -90,6 +91,10 @@ class FakeRosIo:
                     fire.append(lambda d=t["done"]: d(True, ""))
                 else:
                     fire.append(lambda f=t["step"], s=t["stages"][t["i"]]: f(s))
+        f = self._follow
+        if f is not None and now - f["t0"] >= PATH_RUN_S:
+            self._follow, self._path = None, []
+            fire.append(lambda d=f["done"]: d(True, ""))
         return fire
 
     def _finish_task_effects(self, t):
@@ -132,14 +137,21 @@ class FakeRosIo:
 
     def stop_path(self, done):
         with self._lock:
+            f, self._follow = self._follow, None
             self._path = []
+        if f:
+            f["done"](False, "canceled")
         done(True, "")
 
-    def start_path(self, name, done):
+    def start_path(self, name, started, done):
         with self._lock:
+            prev, self._follow = self._follow, None
             x0, y0 = self._pose[0], self._pose[1]
             self._path = [(x0 + 0.1 * i, y0) for i in range(20)]
-        done(True, "")
+            self._follow = dict(t0=self._clock(), done=done)
+        if prev:
+            prev["done"](False, "aborted")
+        started(True, "")
 
     def set_tracker(self, on, done):
         with self._lock:

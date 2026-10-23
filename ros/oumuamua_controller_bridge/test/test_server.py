@@ -375,3 +375,82 @@ def test_default_field_and_long_path_fit_one_datagram():
     shape = [P.PATH_SHAPE, "long_path_name", P.pack_points(pts)[0]]
     assert len(P.encode([P.REL, 0xFFFFFFFF, 0xFFFFFFFF, shape])) <= MAX_DATAGRAM
     assert P.unpack_points(shape[2])[-1][0] == 4.82
+
+
+def _released(p, srv):
+    p.control()
+    p.request(P.RELEASE_STOP)
+    p.pump(0.1)
+    assert srv.sup.mode == 0
+
+
+def test_slow_completion_does_not_delay_estop(env):
+    io, srv, mk = env
+    p = mk()
+    p.connect()
+    _released(p, srv)
+    srv.handlers.complete = lambda line, cursor, cwd: (time.sleep(1.5), (0, ["abc"]))[1]
+    p.request(P.SHELL_COMPLETE, "none", "ab", 2)
+    p.pump(0.05)
+    t0 = time.monotonic()
+    p.control(estop=True)
+    assert p.wait(lambda: srv.sup.mode == 2, 1.0)
+    assert time.monotonic() - t0 < 0.1
+    assert p.wait(lambda: p.rels(P.SHELL_COMPLETION), 3.0)
+
+
+def test_silent_operator_is_released(env):
+    io, srv, mk = env
+    srv._operator_timeout = 0.3
+    p = mk()
+    p.connect()
+    _released(p, srv)
+    calls = []
+    orig = srv.sup.link_lost
+    srv.sup.link_lost = lambda: (calls.append(1), orig())
+    time.sleep(0.6)  # silent: no datagram at all
+    assert srv._session is None and calls
+    p.pump(0.3)  # drain what was sent before the release
+    p.rx.clear()
+    p.pump(0.3)
+    assert not p.kinds(P.STATE) and not p.kinds(P.SCAN)
+
+
+def test_bye_stops_at_once(env):
+    io, srv, mk = env
+    p = mk()
+    p.connect()
+    _released(p, srv)
+    p.control(vx=0.5)
+    p.pump(0.05)
+    p.send([P.BYE, p.session, "closed"])
+    assert p.wait(lambda: srv.sup.mode == 2, 0.2)
+    assert srv.sup.stop_reason == "link lost" and srv._session is None
+
+
+def test_log_is_capped_while_queue_is_long(env):
+    io, srv, mk = env
+    p = mk()
+    p.connect()
+    for i in range(200):
+        srv.notify([P.LOG, 1, 50, "n", "line %d" % i])
+    time.sleep(0.3)  # the phone does not ACK meanwhile
+    with srv._txlock:
+        assert srv._sender.pending() <= 40
+    p.pump(1.0)
+    assert 0 < len(p.rels(P.LOG)) < 60
+
+
+def test_dropped_shell_output_is_resynced(env):
+    io, srv, mk = env
+    p = mk()
+    p.connect()
+    p.request(P.SHELL_OPEN, "t1")
+    assert p.wait(lambda: p.rels(P.SHELL_OPENED))
+    p.pump(0.2)
+    n_opened = len(p.rels(P.SHELL_OPENED))
+    p.request(P.SHELL_INPUT, "t1", b"yes | head -c 300000\n")
+    time.sleep(1.0)  # no ACKs: the queue fills and output is dropped
+    assert "t1" in srv._dropped_tabs
+    assert p.wait(lambda: len(p.rels(P.SHELL_OPENED)) > n_opened, 5.0)
+    assert all(len(P.encode(m)) <= 1200 for m in p.rx)

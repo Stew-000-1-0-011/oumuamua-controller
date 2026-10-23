@@ -103,3 +103,23 @@ def test_fake_suction_and_tracker_and_zero():
 def test_default_config_matches_bridge_yaml():
     params = parse_simple_yaml(BRIDGE_YAML.read_text(encoding="utf-8"))
     assert build_config(params) == DEFAULTS
+
+
+def test_fake_path_run_finishes_after_a_few_seconds():
+    io, clk = make()
+    ev = []
+    io.start_path("slalom_forward", lambda ok, m: ev.append("started"),
+                  lambda ok, m: ev.append(("done", ok)))
+    assert ev == ["started"] and io.snapshot().path
+    run(io, clk, 2.0)
+    assert ev == ["started"]
+    run(io, clk, 1.5)
+    assert ev == ["started", ("done", True)] and not io.snapshot().path
+
+
+def test_fake_stop_path_cancels_run():
+    io, clk = make()
+    ev = []
+    io.start_path("p", lambda ok, m: None, lambda ok, m: ev.append(("done", ok)))
+    io.stop_path(lambda ok, m: None)
+    assert ev == [("done", False)]

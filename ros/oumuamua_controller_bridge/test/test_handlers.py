@@ -54,7 +54,8 @@ def make(auto_done=True):
         completes.append((line, cursor, cwd))
         return 3, ["abc", "abd"]
 
-    h = Handlers(io, sup, FakeShells(), complete, sent.append, {"lift_max": 0.5})
+    h = Handlers(io, sup, FakeShells(), complete, sent.append, {"lift_max": 0.5},
+                 spawn=lambda f: f())
     io.calls.clear()
     return io, sup, h, sent, completes
 
@@ -256,3 +257,77 @@ def test_estop_during_run_task_call_cancels_started_task():
     names = [c[0] for c in io.calls]
     assert names.index("run_task") < len(names) - 1 - names[::-1].index("cancel_task")
     assert sup.mode == Mode.STOP and h.current_task is None
+
+
+def test_path_finish_returns_to_manual():
+    io, sup, h, sent, _ = make()
+    h.handle([P.START_PATH, 1, "p"])
+    assert sup.mode == Mode.AUTO and h.current_path == ("p", True)
+    io.calls.clear()
+    io.path_done(True, "")
+    assert sup.mode == Mode.MANUAL and h.current_path is None
+    assert ("set_tracker", False) in io.calls
+    assert [m for m in sent if m[0] == P.RESULT] == [[P.RESULT, 1, True, ""]]
+    h.handle([P.START_PATH, 2, "p"])  # can run again
+    assert sup.mode == Mode.AUTO
+
+
+def test_path_failure_after_start_returns_to_manual():
+    io, sup, h, sent, _ = make()
+    h.handle([P.START_PATH, 1, "p"])
+    io.path_done(False, "lost the way")
+    assert sup.mode == Mode.MANUAL and h.current_path is None
+
+
+def test_path_cancelled_late_done_is_ignored():
+    io, sup, h, sent, _ = make()
+    h.handle([P.START_PATH, 1, "p"])
+    done = io.path_done
+    h.handle([P.CANCEL, 2])
+    h.handle([P.START_PATH, 3, "q"])
+    done(False, "canceled")  # the old goal ending must not end the new one
+    assert sup.mode == Mode.AUTO and h.current_path == ("q", True)
+
+
+def test_actuation_rejected_while_stopped():
+    io, sup, h, sent, _ = make()
+    sup.on_control(1.0, ctl(estop=True))
+    assert sup.mode == Mode.STOP
+    io.calls.clear()
+    sent.clear()
+    h.handle([P.LIFT_TO, 1, 0, 0.1])
+    h.handle([P.LIFT_ZERO, 2, 2])
+    h.handle([P.SET_SUCTION, 3, 0, True])
+    h.handle([P.SET_TRACKER, 4, True])
+    assert [m[:3] for m in sent] == [[P.RESULT, i, False] for i in (1, 2, 3, 4)]
+    assert all(m[3] == "stopped: estop" for m in sent)
+    assert io.calls == []
+    h.handle([P.SET_SUCTION, 5, 0, False])
+    h.handle([P.SET_TRACKER, 6, False])
+    assert io.calls == [("set_suction", 0, False), ("set_tracker", False)]
+
+
+def test_shell_opened_respects_datagram_size():
+    io, sup, h, sent, _ = make()
+    h.shells.replay = lambda tab: b"x" * 2500
+    h.handle([P.SHELL_OPEN, 1, "a"])
+    assert sent[0][0] == P.SHELL_OPENED and len(sent[0][2]) == P.MAX_SHELL_CHUNK
+    assert [m[0] for m in sent] == [P.SHELL_OPENED, P.SHELL_OUTPUT, P.SHELL_OUTPUT, P.RESULT]
+    assert b"".join(m[2] for m in sent[:3]) == b"x" * 2500
+
+
+def test_complete_runs_off_the_calling_thread():
+    import threading
+    import time
+    io, sup, h, sent, _ = make()
+    gate = threading.Event()
+    h.complete = lambda line, cursor, cwd: (gate.wait(2.0), (0, ["a"]))[1]
+    h._spawn = __import__("oumuamua_controller_bridge.handlers", fromlist=["x"])._thread_spawn
+    t0 = time.monotonic()
+    h.handle([P.SHELL_COMPLETE, 1, "a", "l", 1])
+    assert time.monotonic() - t0 < 0.1 and sent == []
+    gate.set()
+    end = time.monotonic() + 2
+    while time.monotonic() < end and len(sent) < 2:
+        time.sleep(0.01)
+    assert [m[0] for m in sent] == [P.SHELL_COMPLETION, P.RESULT]

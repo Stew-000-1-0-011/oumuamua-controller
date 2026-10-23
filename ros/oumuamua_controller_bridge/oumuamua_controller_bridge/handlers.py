@@ -10,10 +10,20 @@ def _noop(ok, msg):
     pass
 
 
+MAX_COMPLETIONS = 4  # concurrent completion workers
+
+
+def _thread_spawn(fn) -> None:
+    threading.Thread(target=fn, name="complete", daemon=True).start()
+
+
 class Handlers:
     def __init__(self, io, sup: Supervisor, shells, complete, send: Callable[[list], None],
-                 config: dict):
+                 config: dict, spawn: Callable = _thread_spawn):
         self.io = io
+        self._spawn = spawn
+        self._completing = 0
+        self._clock = threading.Lock()
         self.sup = sup
         self.shells = shells
         self.complete = complete
@@ -103,8 +113,17 @@ class Handlers:
         ok, message = self.sup.release()
         self._result(req, ok, message)
 
+    def _reject_if_stopped(self, req) -> bool:
+        """Actuation is refused while stopped; True if the request was answered."""
+        if self.sup.mode == Mode.STOP:
+            self._result(req, False, f"stopped: {self.sup.stop_reason}")
+            return True
+        return False
+
     def _set_suction(self, req, m):
         on = bool(m[3])
+        if on and self._reject_if_stopped(req):
+            return
         self._each(req, m[2], lambda g, d: self.io.set_suction(g, on, d))
 
     def _lift_to(self, req, m):
@@ -113,9 +132,14 @@ class Handlers:
         if not 0.0 <= h <= float(self.config["lift_max"]):
             self._result(req, False, f"height out of range (0..{self.config['lift_max']})")
             return
+        if self._reject_if_stopped(req):
+            return
         self._each(req, m[2], lambda g, d: self.io.lift_to(g, h, d))
 
     def _lift_zero(self, req, m):
+        self._targets(m[2])
+        if self._reject_if_stopped(req):
+            return
         self._each(req, m[2], lambda g, d: self.io.lift_zero(g, d))
 
     def _busy(self):
@@ -174,50 +198,67 @@ class Handlers:
                 return
             epoch = self._epoch
             self.current_path = (name, False)
+        st = {"accepted": False, "replied": False}
+
+        def reply(ok, message=""):
+            if not st["replied"]:
+                st["replied"] = True
+                self._result(req, ok, message)
 
         def fail(message):
             self.current_path = None
-            self._result(req, False, message)
+            reply(False, message)
 
         def stale():
             return epoch != self._epoch or self.sup.mode == Mode.STOP
 
-        def started(ok, message):
+        def started(ok, message):  # the follow goal was accepted
             with self.sup.lock:
                 if stale():
-                    if ok and self.current_path is None:  # may be running, nobody newer: undo
+                    if self.current_path is None:  # nobody newer: undo what just began
                         self.io.stop_path(_noop)
                         self.io.set_tracker(False, _noop)
-                    self._result(req, False, "cancelled")
+                    reply(False, "cancelled")
                     return
-                if not ok:
-                    self.io.set_tracker(False, _noop)
-                    fail(message)
-                    return
+                st["accepted"] = True
                 self.sup.enter_auto(name)
                 self.current_path = (name, True)
-                self._result(req, True, "")
+                reply(True)
+
+        def finished(ok, message):  # the goal ended (success, failure or cancel) or never began
+            with self.sup.lock:
+                if stale():
+                    reply(False, "cancelled")  # no-op when already answered
+                    return
+                self.io.set_tracker(False, _noop)
+                if not st["accepted"]:
+                    fail(message)
+                    return
+                self.current_path = None
+                self.sup.leave_auto()
 
         def tracker(ok, message):
             with self.sup.lock:
                 if stale():
                     if ok and self.current_path is None:
                         self.io.set_tracker(False, _noop)
-                    self._result(req, False, "cancelled")
+                    reply(False, "cancelled")
                     return
                 if not ok:
                     fail(message)
                     return
-                self.io.start_path(name, started)
+                self.io.start_path(name, started, finished)
 
         with self.sup.lock:
             if epoch == self._epoch:
                 self.io.set_tracker(True, tracker)
             else:
-                self._result(req, False, "cancelled")
+                reply(False, "cancelled")
 
     def _set_tracker(self, req, m):
         on = bool(m[2])
+        if on and self._reject_if_stopped(req):
+            return
         self._simple(req, lambda d: self.io.set_tracker(on, d))
 
     def _set_pose(self, req, m):
@@ -235,7 +276,8 @@ class Handlers:
         tab = m[2]
         ok, message = self.shells.open(tab)
         if ok:
-            self.send([P.SHELL_OPENED, tab, self.shells.replay(tab)])
+            for msg in P.shell_opened_msgs(tab, self.shells.replay(tab)):
+                self.send(msg)
         self._result(req, ok, message)
 
     def _shell_input(self, req, m):
@@ -244,9 +286,25 @@ class Handlers:
 
     def _shell_complete(self, req, m):
         tab, line, cursor = m[2], m[3], int(m[4])
-        start, cands = self.complete(line, cursor, self.shells.cwd(tab))
-        self.send([P.SHELL_COMPLETION, req, tab, int(start), list(cands)])
-        self._result(req, True, "")
+        cwd = self.shells.cwd(tab)
+        with self._clock:
+            if self._completing >= MAX_COMPLETIONS:
+                self._result(req, False, "busy")
+                return
+            self._completing += 1
+
+        def work():  # off the server thread: bash completion can take seconds
+            try:
+                start, cands = self.complete(line, cursor, cwd)
+                self.send([P.SHELL_COMPLETION, req, tab, int(start), list(cands)])
+                self._result(req, True, "")
+            except Exception as e:
+                self._result(req, False, f"completion failed: {e}")
+            finally:
+                with self._clock:
+                    self._completing -= 1
+
+        self._spawn(work)
 
     def _shell_close(self, req, m):
         ok, message = self.shells.close(m[2])

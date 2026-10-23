@@ -2,7 +2,9 @@
 import enum
 import functools
 import math
+import sys
 import threading
+import traceback
 from typing import Callable, Optional
 
 from .rosio import RosIo
@@ -16,6 +18,14 @@ class Mode(enum.IntEnum):
 
 def _noop(ok, msg):
     pass
+
+
+def _fin(v) -> float:
+    try:
+        v = float(v)
+    except (TypeError, ValueError):
+        return 0.0
+    return v if math.isfinite(v) else 0.0
 
 
 def _locked(fn):
@@ -52,7 +62,7 @@ class Supervisor:
         self._now = now_s
         self._last_rx = now_s
         self._estop = bool(c["estop"])
-        self._v = (float(c["vx"]), float(c["vy"]), float(c["wz"]))
+        self._v = (_fin(c["vx"]), _fin(c["vy"]), _fin(c["wz"]))
         self._field = bool(c["field_frame"])
         jogs = [int(c["jog_left"]), int(c["jog_right"])]
         if self._estop:
@@ -101,6 +111,7 @@ class Supervisor:
         if self.mode == Mode.STOP:
             self.mode = Mode.MANUAL
             self.stop_reason = ""
+            self._v = (0.0, 0.0, 0.0)  # drive only on a CONTROL received after the release
         return True, ""
 
     @_locked
@@ -135,12 +146,16 @@ class Supervisor:
         self.stop_reason = reason
         self.auto_label = ""
         io = self.io
-        io.cancel_task()
-        io.stop_path(_noop)
-        io.set_tracker(False, _noop)
-        for g in (0, 1):
-            io.lift_cancel(g)
-        for g in (0, 1):
-            io.set_suction(g, False, _noop)
+        steps = [("cancel_task", io.cancel_task),
+                 ("stop_path", lambda: io.stop_path(_noop)),
+                 ("set_tracker", lambda: io.set_tracker(False, _noop))]
+        steps += [(f"lift_cancel {g}", lambda g=g: io.lift_cancel(g)) for g in (0, 1)]
+        steps += [(f"set_suction {g}", lambda g=g: io.set_suction(g, False, _noop)) for g in (0, 1)]
+        for name, step in steps:  # each step on its own: suction-off must always run
+            try:
+                step()
+            except Exception:
+                print(f"stop: {name} failed", file=sys.stderr)
+                traceback.print_exc()
         if self.on_stop:
             self.on_stop()

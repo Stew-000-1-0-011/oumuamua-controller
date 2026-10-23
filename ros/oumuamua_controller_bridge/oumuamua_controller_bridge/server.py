@@ -24,6 +24,9 @@ STATE_S = 0.05
 SCAN_S = 0.1
 BEACON_S = 1.0
 FLOOD_PENDING = 64
+RESYNC_PENDING = 16
+LOG_PENDING = 32
+RESYNC_BYTES = 64 * 1024
 MAX_PATH_POINTS = P.MAX_POINTS_PER_SCAN
 
 
@@ -130,6 +133,7 @@ class BridgeServer:
         self._scan_id = 0
         self._last_task_text = object()
         self._path_shape: Optional[list] = None
+        self._dropped_tabs: set = set()  # shell output was dropped: resync when the link drains
 
         self.sup = Supervisor(io, lift_max=float(config.get("lift_max", 0.19)))
         self.shells = ShellManager(Path(log_root), self._on_shell_output, self._on_shell_closed)
@@ -183,8 +187,11 @@ class BridgeServer:
     def _on_shell_output(self, tab: str, data: bytes) -> None:
         for i in range(0, len(data), P.MAX_SHELL_CHUNK):
             with self._txlock:
-                if self._session is None or self._sender.pending() >= FLOOD_PENDING:
-                    return  # stays in the ShellManager replay buffer
+                if self._session is None:
+                    return
+                if self._sender.pending() >= FLOOD_PENDING:
+                    self._dropped_tabs.add(tab)  # stays in the replay buffer; resent later
+                    return
                 self._sender.push([P.SHELL_OUTPUT, tab, data[i:i + P.MAX_SHELL_CHUNK]])
 
     def _on_shell_closed(self, tab: str, reason: str) -> None:
@@ -222,6 +229,7 @@ class BridgeServer:
             self._last_op_rx = now
             self._sender.reset()
             self._receiver.reset()
+            self._dropped_tabs.clear()
             self._max_ctl_seq = 0
             self._ack_seq = self._ack_t = 0
         self._tx([P.WELCOME, session, self.robot_name, True, ""])
@@ -250,9 +258,7 @@ class BridgeServer:
         for tab in self.shells.tabs():
             replay = self.shells.replay(tab)
             # A REL must fit one datagram: OPENED carries the first chunk, OUTPUT the rest.
-            burst.append([P.SHELL_OPENED, tab, replay[:P.MAX_SHELL_CHUNK]])
-            for i in range(P.MAX_SHELL_CHUNK, len(replay), P.MAX_SHELL_CHUNK):
-                burst.append([P.SHELL_OUTPUT, tab, replay[i:i + P.MAX_SHELL_CHUNK]])
+            burst.extend(P.shell_opened_msgs(tab, replay))
         with self._txlock:
             for msg in burst:
                 self._sender.push(msg)
@@ -292,9 +298,8 @@ class BridgeServer:
                 with self._txlock:
                     self._sender.on_ack(int(m[2]))
             elif kind == P.BYE:
-                with self._txlock:
-                    self._session = None
-                    self._addr = None
+                self._release_operator()
+                self.sup.link_lost()
         except (IndexError, TypeError, ValueError):
             pass
         except Exception:
@@ -362,11 +367,40 @@ class BridgeServer:
                 msg = self._notify_q.get_nowait()
             except queue.Empty:
                 return
-            if msg and msg[0] == P.LOG and len(msg) > 2 and msg[2] < self.handlers.log_level:
-                continue
+            if msg and msg[0] == P.LOG:
+                if len(msg) > 2 and msg[2] < self.handlers.log_level:
+                    continue
+                with self._txlock:
+                    if self._sender.pending() > LOG_PENDING:
+                        continue  # a slow link must not pile up logs
             if msg and msg[0] == P.PATH_SHAPE:
                 self._path_shape = msg
             self._send(msg)
+
+    def _resync_shells(self) -> None:
+        """Output was dropped under load: resend the tab's replay once the queue has drained."""
+        with self._txlock:
+            if not self._dropped_tabs or self._session is None \
+                    or self._sender.pending() >= RESYNC_PENDING:
+                return
+            tabs, self._dropped_tabs = self._dropped_tabs, set()
+        for tab in tabs:
+            if tab not in self.shells.tabs():
+                continue
+            replay = self.shells.replay(tab)
+            if len(replay) > RESYNC_BYTES:
+                replay = replay[-RESYNC_BYTES:]
+                nl = replay.find(b"\n")
+                replay = replay[nl + 1:] if nl >= 0 else replay
+            with self._txlock:
+                for msg in P.shell_opened_msgs(tab, replay):
+                    self._sender.push(msg)
+
+    def _check_operator(self, now: float) -> None:
+        """A silent operator (5 s without any datagram) is released and the robot stopped."""
+        if self._session is not None and now - self._last_op_rx > self._operator_timeout:
+            self._release_operator()
+            self.sup.link_lost()
 
     def _flush_reliable(self, now: float) -> None:
         with self._txlock:
@@ -428,7 +462,9 @@ class BridgeServer:
                     yaw = s.pose[2] if s is not None and s.pose else None
                     self.sup.tick(now, yaw)
                 guarded(tick)
+            guarded(lambda: self._check_operator(now))
             guarded(lambda: self.shells.poll(0))
+            guarded(self._resync_shells)
             guarded(self._drain_notify)
             if now >= next_state:
                 next_state = max(next_state + STATE_S, now - STATE_S)

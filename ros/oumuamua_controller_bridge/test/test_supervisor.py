@@ -131,3 +131,35 @@ def test_cancel_returns_to_manual():
     s.enter_auto("x")
     s.cancel_to_manual()
     assert s.mode == Mode.MANUAL
+
+
+def test_nonfinite_velocity_is_zero():
+    io, s = running()
+    s.on_control(0.1, ctl(vx=float("nan"), vy=float("inf"), wz=float("-inf")))
+    s.tick(0.1, 0.0)
+    assert io.calls[-1] == ("cmd_vel", 0.0, 0.0, 0.0)
+
+
+def test_release_does_not_apply_stale_velocity():
+    io, s = make()
+    s.on_control(0.0, ctl(vx=1.0))
+    assert s.release() == (True, "")
+    s.tick(0.01, 0.0)
+    assert io.calls[-1] == ("cmd_vel", 0.0, 0.0, 0.0)
+    s.on_control(0.02, ctl(vx=1.0))
+    s.tick(0.03, 0.0)
+    assert io.calls[-1] == ("cmd_vel", 1.0, 0.0, 0.0)
+
+
+def test_enter_stop_runs_every_step_even_if_one_raises():
+    io, s = running()
+
+    def boom(*a, **k):
+        raise RuntimeError("ros down")
+    io.cancel_task = boom
+    io.stop_path = boom
+    io.set_tracker = boom
+    s.on_control(0.1, ctl(estop=True))
+    assert s.mode == Mode.STOP
+    assert ("set_suction", 0, False) in io.calls and ("set_suction", 1, False) in io.calls
+    assert ("lift_cancel", 1) in io.calls

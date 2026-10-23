@@ -18,6 +18,7 @@ from gripper.msg import GripperState
 from mini_shirasu_ros.msg import Status as WheelStatus
 from nav_msgs.msg import Odometry
 from nav_msgs.msg import Path as PathMsg
+from path_follower.action import FollowPath
 from rcl_interfaces.msg import Log
 from rclpy.action import ActionClient
 from rclpy.callback_groups import MutuallyExclusiveCallbackGroup, ReentrantCallbackGroup
@@ -85,6 +86,7 @@ class RosIoNode(Node):
         self._tracker_enabled = False
         self._task_goal: Optional[_Goal] = None
         self._lift_goals = [None] * GRIPPER_COUNT
+        self._follow_goal: Optional[_Goal] = None
 
         self._tf_buffer = Buffer()
         self._tf_listener = TransformListener(self._tf_buffer, self)
@@ -112,12 +114,12 @@ class RosIoNode(Node):
         self._stop_cli = self.create_client(Trigger, "/path_follower/stop", callback_group=g)
         self._reset_cli = self.create_client(Trigger, "/task_commander/reset", callback_group=g)
         self._tracker_cli = self.create_client(SetBool, "/tracker_node/enable", callback_group=g)
-        self._start_clis = {}  # name -> client, created on demand
         self._suction_cli = [self.create_client(SetBool, f"/gripper{i}/set_suction",
                                                 callback_group=g) for i in range(GRIPPER_COUNT)]
         self._zero_cli = [self.create_client(Trigger, f"/gripper{i}/zero_lift", callback_group=g)
                           for i in range(GRIPPER_COUNT)]
         self._run_ac = ActionClient(self, RunTask, "/task_commander/run", callback_group=g)
+        self._follow_ac = ActionClient(self, FollowPath, "/path_follower/follow", callback_group=g)
         self._lift_ac = [ActionClient(self, MoveLift, f"/gripper{i}/move_lift", callback_group=g)
                          for i in range(GRIPPER_COUNT)]
 
@@ -245,15 +247,25 @@ class RosIoNode(Node):
         future.add_done_callback(finished)
 
     def stop_path(self, done: Done) -> None:
+        with self._lock:
+            goal = self._follow_goal
+        self._cancel_goal(goal)  # the follow goal's done fires (False) when it is cancelled
         self._call(self._stop_cli, Trigger.Request(), "/path_follower/stop", done)
 
-    def start_path(self, name: str, done: Done) -> None:
-        topic = START_PREFIX + name
-        client = self._start_clis.get(name)
-        if client is None:
-            client = self._start_clis[name] = self.create_client(Trigger, topic,
-                                                                 callback_group=self._cbg)
-        self._call(client, Trigger.Request(), topic, done)
+    def start_path(self, name: str, started: Done, done: Done) -> None:
+        """Run the named path with the /path_follower/follow action: `started` on acceptance,
+        `done` when the goal ends (or is rejected / cancelled)."""
+        goal_msg = FollowPath.Goal()
+        goal_msg.route = name
+        goal = _Goal()
+        with self._lock:
+            self._follow_goal = goal
+
+        def result(res):
+            return bool(res.success), str(res.message)
+
+        self._send_goal(self._follow_ac, goal_msg, "/path_follower/follow", goal, None, result,
+                        done, lambda: started(True, ""))
 
     def set_tracker(self, on: bool, done: Done) -> None:
         req = SetBool.Request()
@@ -280,7 +292,7 @@ class RosIoNode(Node):
 
     # -- RosIo: actions -------------------------------------------------
     def _send_goal(self, client, goal_msg, name: str, goal: _Goal, on_feedback, on_result,
-                   done: Done) -> None:
+                   done: Done, on_accept=None) -> None:
         """Send an action goal without blocking. `on_result(result)` -> (ok, message) is used for
         a finished goal; rejection, abort, cancel, errors and a silent server all end in done().
         Acceptance has a 5 s watchdog; the running goal itself has no timeout."""
@@ -290,7 +302,8 @@ class RosIoNode(Node):
         if not client.server_is_ready():
             def wait_then_send():
                 if client.wait_for_server(timeout_sec=SERVICE_WAIT_S):
-                    self._send_goal(client, goal_msg, name, goal, on_feedback, on_result, done)
+                    self._send_goal(client, goal_msg, name, goal, on_feedback, on_result, done,
+                                    on_accept)
                 else:
                     goal.finished = True
                     done(False, f"{name} がありません")
@@ -323,6 +336,11 @@ class RosIoNode(Node):
             if goal.finished:  # timed out already: just cancel, the result is not awaited
                 return
             handle.get_result_async().add_done_callback(finished)
+            if on_accept is not None:
+                try:
+                    on_accept()
+                except Exception as e:
+                    self.get_logger().error(f"{name}: {e}")
 
         def finished(fut):
             goal.finished = True

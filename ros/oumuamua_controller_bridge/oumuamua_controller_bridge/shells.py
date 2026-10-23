@@ -22,6 +22,7 @@ from typing import Callable
 NAME_RE = re.compile(r"[A-Za-z0-9_-]{1,32}")
 ROWS, COLS = 24, 80
 _FLUSH_CTRL = {"\x03", "\x04", "\x1a"}
+MAX_PENDING_INPUT = 64 * 1024
 
 
 def _locked(fn):
@@ -47,6 +48,8 @@ class _Tab:
         self.replay = bytearray()
         self.in_buf = ""
         self.out_buf = b""
+        self.wbuf = bytearray()  # input the pty has not accepted yet (flushed by poll)
+        self.dropped = False  # output was not forwarded (flood): resync once the link drains
 
 
 class ShellManager:
@@ -61,6 +64,7 @@ class ShellManager:
         self.env = env
         self._tabs: dict[str, _Tab] = {}
         self._lock = threading.RLock()
+        self._zombies: list[list] = []  # [pid, kill_at, give_up_at, killed]: reaped by poll()
 
     # ---- helpers -------------------------------------------------------
     def _logline(self, tab: _Tab, prefix: str, text: str) -> None:
@@ -108,6 +112,37 @@ class ShellManager:
             if time.monotonic() >= end:
                 return False
             time.sleep(0.01)
+
+    def _later_reap(self, pid: int, kill_after_s: float, give_up_s: float = 3.0) -> None:
+        """Reap `pid` from poll() without waiting; SIGKILL it if it lingers."""
+        now = time.monotonic()
+        self._zombies.append([pid, now + kill_after_s, now + give_up_s, False])
+
+    def _reap_step(self) -> None:
+        if not self._zombies:
+            return
+        now = time.monotonic()
+        keep = []
+        for z in self._zombies:
+            pid, kill_at, give_up, killed = z
+            try:
+                p, _ = os.waitpid(pid, os.WNOHANG)
+            except ChildProcessError:
+                continue
+            if p:
+                continue
+            if now >= give_up:
+                continue
+            if now >= kill_at and not killed:
+                for kill in (lambda: os.killpg(pid, signal.SIGKILL),
+                             lambda: os.kill(pid, signal.SIGKILL)):
+                    try:
+                        kill()
+                    except (ProcessLookupError, PermissionError):
+                        pass
+                z[3] = True
+            keep.append(z)
+        self._zombies = keep
 
     # ---- API -----------------------------------------------------------
     @_locked
@@ -179,21 +214,33 @@ class ShellManager:
                 if ch in ("^C", "^D", "^Z"):
                     self._logline(t, "> ", t.in_buf)
                     t.in_buf = ""
-        view = memoryview(data)
-        deadline = time.monotonic() + 0.5
-        while len(view):
-            try:
-                n = os.write(t.fd, view)
-                view = view[n:]
-            except BlockingIOError:
-                if time.monotonic() > deadline:
-                    return False, "shell busy"
-                p = select.poll()
-                p.register(t.fd, select.POLLOUT)
-                p.poll(50)
-            except OSError as e:
-                return False, f"write failed: {e.strerror}"
+        if t.wbuf:
+            if len(t.wbuf) + len(data) > MAX_PENDING_INPUT:
+                return False, "shell busy"
+            t.wbuf += data
+            return True, ""
+        try:
+            n = os.write(t.fd, data)
+        except BlockingIOError:
+            n = 0
+        except OSError as e:
+            return False, f"write failed: {e.strerror}"
+        if n < len(data):
+            rest = data[n:]
+            if len(rest) > MAX_PENDING_INPUT:
+                return False, "shell busy"
+            t.wbuf += rest  # poll() writes it when the pty accepts more
         return True, ""
+
+    def _flush_input(self, t: _Tab) -> None:
+        try:
+            n = os.write(t.fd, bytes(t.wbuf))
+        except BlockingIOError:
+            return
+        except OSError:
+            t.wbuf.clear()
+            return
+        del t.wbuf[:n]
 
     @_locked
     def close(self, tab: str) -> tuple[bool, str]:
@@ -204,14 +251,8 @@ class ShellManager:
             os.kill(t.pid, signal.SIGHUP)
         except ProcessLookupError:
             pass
-        if not self._reap(t.pid, 0.5):
-            for kill in (lambda: os.killpg(t.pid, signal.SIGKILL),
-                         lambda: os.kill(t.pid, signal.SIGKILL)):
-                try:
-                    kill()
-                except (ProcessLookupError, PermissionError):
-                    pass
-            self._reap(t.pid, 2.0)
+        self._later_reap(t.pid, 0.5)  # SIGKILL from poll() if SIGHUP is not enough
+        self._reap_step()
         self._finish(tab, t)
         return True, ""
 
@@ -266,30 +307,33 @@ class ShellManager:
 
     @_locked
     def poll(self, timeout_s: float) -> None:
+        self._reap_step()
         if not self._tabs:
             if timeout_s > 0:
                 time.sleep(min(timeout_s, 0.05))
             return
         by_fd = {t.fd: name for name, t in self._tabs.items()}
         p = select.poll()
-        for fd in by_fd:
-            p.register(fd, select.POLLIN)
+        for fd, name in by_fd.items():
+            p.register(fd, select.POLLIN | (select.POLLOUT if self._tabs[name].wbuf else 0))
         try:
-            ready = [fd for fd, _ in p.poll(max(0.0, timeout_s) * 1000)]
+            ready = p.poll(max(0.0, timeout_s) * 1000)
         except OSError:
             return
-        for fd in ready:
+        for fd, ev in ready:
             name = by_fd[fd]
             t = self._tabs.get(name)
             if t is None:
+                continue
+            if ev & select.POLLOUT and t.wbuf:
+                self._flush_input(t)
+            if not ev & ~select.POLLOUT:
                 continue
             try:
                 data = os.read(fd, 65536)
             except BlockingIOError:
                 continue
-            except OSError as e:
-                if e.errno not in (errno.EIO, errno.EBADF):
-                    pass
+            except OSError:
                 data = b""
             if not data:
                 self._exited(name, t)
@@ -311,12 +355,7 @@ class ShellManager:
     def _exited(self, name: str, t: _Tab) -> None:
         if self._tabs.pop(name, None) is None:
             return
-        if not self._reap(t.pid, 0.3):
-            try:
-                os.kill(t.pid, signal.SIGKILL)
-            except ProcessLookupError:
-                pass
-            self._reap(t.pid, 1.0)
+        self._later_reap(t.pid, 0.3, 2.0)
         self._finish(name, t)
         try:
             self.on_closed(name, "exited")
@@ -327,6 +366,10 @@ class ShellManager:
     def close_all(self) -> None:
         for name in list(self._tabs):
             self.close(name)
+        end = time.monotonic() + 3.5
+        while self._zombies and time.monotonic() < end:
+            self._reap_step()
+            time.sleep(0.01)
 
 
 def _render_input_chunks(data: bytes):
