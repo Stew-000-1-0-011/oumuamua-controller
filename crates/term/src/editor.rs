@@ -228,11 +228,6 @@ impl LineEditor {
         EditAction::None
     }
 
-    /// Ctrl+R search is active (Esc then leaves the search instead of being local only).
-    pub fn in_search(&self) -> bool {
-        self.search.is_some()
-    }
-
     /// Text to draw and the cursor position as a char index.
     pub fn display(&self) -> (String, usize) {
         if let Some(s) = &self.search {

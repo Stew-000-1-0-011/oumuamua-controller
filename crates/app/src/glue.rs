@@ -141,14 +141,16 @@ const SYNC_WAIT: Duration = Duration::from_millis(1500);
 /// Console rows are rebuilt at most this often.
 const CONSOLE_INTERVAL: Duration = Duration::from_millis(100);
 const PERSIST_DELAY: Duration = Duration::from_secs(1);
-/// Width of one output cell (an ASCII character) in logical pixels at 14 px text.
-const CELL_PX: f32 = 8.0;
+/// Width of one output cell in logical pixels at 14 px text (DejaVu Sans Mono is 8.43).
+const CELL_PX: f32 = 8.5;
 const LOG_LEVELS: [u8; 4] = [10, 20, 30, 40];
 
 #[derive(Debug, Clone, PartialEq)]
 enum ShellReq {
     Open(String),
     Rename { old: String, new: String },
+    /// Input, completion or close: only a failure is reported.
+    Other(&'static str),
 }
 
 fn slint_color(c: Option<term::Color>, default: (u8, u8, u8)) -> slint::Color {
@@ -178,6 +180,12 @@ fn console_row(r: &Row) -> ConsoleRow {
                 .collect();
             ConsoleRow { folded: false, hidden: 0, block: 0, spans: ModelRc::from(Rc::new(VecModel::from(spans))) }
         }
+    }
+}
+
+fn show_keyboard(g: &Glue) {
+    if let Some(w) = g.window.upgrade() {
+        w.global::<ConsoleState>().set_kbd_shown(true);
     }
 }
 
@@ -779,6 +787,12 @@ impl Glue {
                 Msg::ShellRename { tab, new_name, .. } => self
                     .shell_reqs
                     .push((req, ShellReq::Rename { old: tab.clone(), new: new_name.clone() }, Instant::now())),
+                Msg::ShellComplete { tab, .. } => {
+                    self.console.note_complete_req(tab, req);
+                    self.shell_reqs.push((req, ShellReq::Other("補完"), Instant::now()));
+                }
+                Msg::ShellInput { .. } => self.shell_reqs.push((req, ShellReq::Other("入力"), Instant::now())),
+                Msg::ShellClose { .. } => self.shell_reqs.push((req, ShellReq::Other("閉じる"), Instant::now())),
                 _ => {}
             }
             c.send(m);
@@ -830,6 +844,7 @@ impl Glue {
                         console.undo_rename(new, old);
                         console.log_local(40, "console", &format!("名前を変えられません: {why}"));
                     }
+                    ShellReq::Other(what) => console.log_local(40, "console", &format!("{what}に失敗しました: {why}")),
                 }
             }
             false
@@ -911,7 +926,23 @@ impl Glue {
         let cols = self.console_cols;
         let new: Vec<Row> = self.console.rows().iter().flat_map(|r| console::wrap_row(r, cols)).collect();
         let m = &self.console_rows;
-        let common = self.console_shown.iter().zip(&new).take_while(|(a, b)| a == b).count();
+        let mut common = self.console_shown.iter().zip(&new).take_while(|(a, b)| a == b).count();
+        if common == 0
+            && let Some(first) = new.first()
+        {
+            // A full scrollback drops lines at the front: remove them instead of rewriting.
+            let old = &self.console_shown;
+            if let Some(k) = old.iter().position(|r| r == first).filter(|&k| k > 0) {
+                let n = (old.len() - k).min(new.len());
+                if old[k..k + n] == new[..n] {
+                    for _ in 0..k {
+                        m.remove(0);
+                    }
+                    self.console_shown.drain(..k);
+                    common = n;
+                }
+            }
+        }
         let old_len = m.row_count();
         for (i, r) in new.iter().enumerate().take(old_len).skip(common) {
             m.set_row_data(i, console_row(r));
@@ -1274,12 +1305,14 @@ pub fn start(window: &MainWindow) -> Rc<RefCell<GlueHandle>> {
         cs.on_new_tab(move || {
             let mut g = g.borrow_mut();
             g.console.begin_new_tab();
+            show_keyboard(&g);
             g.refresh_console();
         });
         let g = glue.clone();
         cs.on_rename_tab(move |i| {
             let mut g = g.borrow_mut();
             g.console.begin_rename(usize::try_from(i).unwrap_or(0));
+            show_keyboard(&g);
             g.refresh_console();
         });
         let g = glue.clone();
@@ -1355,6 +1388,15 @@ pub fn start(window: &MainWindow) -> Rc<RefCell<GlueHandle>> {
 pub struct GlueHandle {
     _glue: Rc<RefCell<Glue>>,
     _timer: Timer,
+}
+
+impl Drop for GlueHandle {
+    /// Histories and quick commands are written on exit too (saving is otherwise debounced).
+    fn drop(&mut self) {
+        if let Ok(g) = self._glue.try_borrow() {
+            g.console.save();
+        }
+    }
 }
 
 #[cfg(test)]

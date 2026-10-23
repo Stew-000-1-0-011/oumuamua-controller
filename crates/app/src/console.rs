@@ -76,6 +76,8 @@ struct Tab {
     cands: Vec<String>,
     cand_start: usize,
     pending_complete: bool,
+    /// Request id of the SHELL_COMPLETE in flight, once the glue has sent it.
+    complete_req: Option<u32>,
     /// Created before the last (re)connect and not yet confirmed by the robot.
     stale: bool,
 }
@@ -92,6 +94,7 @@ impl Tab {
             cands: Vec::new(),
             cand_start: 0,
             pending_complete: false,
+            complete_req: None,
             stale: false,
         }
     }
@@ -112,6 +115,8 @@ pub struct Console {
     clock: u64,
     /// Grows on every Enter, so the view can jump to the bottom.
     submit_seq: u64,
+    /// Fixed UTC offset for log times (tests); `None` uses the local zone.
+    tz_offset: Option<i64>,
     dir: Option<PathBuf>,
 }
 
@@ -163,18 +168,21 @@ fn level_sgr(level: u8) -> &'static str {
 }
 
 /// "HH:MM:SS [LEVEL] name: text" (UTC), colored by level, as terminal bytes.
-pub fn format_log(stamp_ms: u64, level: u8, name: &str, text: &str) -> Vec<u8> {
-    let secs = stamp_ms / 1000 % 86_400;
+pub fn format_log(stamp_ms: u64, offset: Option<i64>, level: u8, name: &str, text: &str) -> Vec<u8> {
+    let utc = offset.is_none();
+    let local = (stamp_ms / 1000) as i64 + offset.unwrap_or(0);
+    let secs = local.rem_euclid(86_400) as u64;
     let clean = |s: &str| -> String {
         s.chars().map(|c| if c == '\n' || c == '\r' || c == '\t' { ' ' } else { c }).filter(|c| !c.is_control()).collect()
     };
     let sgr = level_sgr(level);
     let reset = if sgr.is_empty() { "" } else { "\x1b[0m" };
     format!(
-        "{sgr}{:02}:{:02}:{:02} [{}] {}: {}{reset}\r\n",
+        "{sgr}{:02}:{:02}:{:02}{} [{}] {}: {}{reset}\r\n",
         secs / 3600,
         secs / 60 % 60,
         secs % 60,
+        if utc { "Z" } else { "" },
         level_name(level),
         clean(name),
         clean(text)
@@ -216,6 +224,32 @@ pub fn palette(c: Color) -> (u8, u8, u8) {
             (v, v, v)
         }
     }
+}
+
+/// Local UTC offset in seconds at `secs` since the epoch; `None` when the zone is unknown
+/// (the time is then shown as UTC with a trailing Z).
+#[cfg(unix)]
+fn local_offset(secs: u64) -> Option<i64> {
+    use std::ffi::{c_char, c_int, c_long};
+    #[repr(C)]
+    struct Tm {
+        ints: [c_int; 9],
+        gmtoff: c_long,
+        zone: *const c_char,
+    }
+    unsafe extern "C" {
+        fn localtime_r(t: *const c_long, out: *mut Tm) -> *mut Tm;
+    }
+    let t = secs as c_long;
+    let mut tm = Tm { ints: [0; 9], gmtoff: 0, zone: std::ptr::null() };
+    // SAFETY: `t` and `tm` are valid for the call; localtime_r writes only into `tm`.
+    let r = unsafe { localtime_r(&t, &mut tm) };
+    (!r.is_null()).then_some(tm.gmtoff as i64)
+}
+
+#[cfg(not(unix))]
+fn local_offset(_secs: u64) -> Option<i64> {
+    None
 }
 
 /// Cells a character takes: 2 for wide (CJK and similar), 1 otherwise.
@@ -268,6 +302,7 @@ impl Console {
             dirty: false,
             clock: 0,
             submit_seq: 0,
+            tz_offset: None,
             dir: None,
         }
     }
@@ -467,6 +502,7 @@ impl Console {
             }
             EditAction::Complete { line, cursor } => {
                 tab.pending_complete = true;
+                tab.complete_req = None;
                 out.push(Msg::ShellComplete { req: 0, tab: name, line, cursor: cursor as u32 });
             }
             EditAction::SendNow(data) => out.push(Msg::ShellInput { req: 0, tab: name, data }),
@@ -587,9 +623,10 @@ impl Console {
                     self.touch(i);
                 }
             }
-            ShellEvent::Completion { tab, start, candidates, .. } => {
+            ShellEvent::Completion { req, tab, start, candidates } => {
                 if let Some(i) = self.find(&tab)
                     && self.tabs[i].pending_complete
+                    && self.tabs[i].complete_req.is_none_or(|r| r == req)
                 {
                     let t = &mut self.tabs[i];
                     t.pending_complete = false;
@@ -611,7 +648,8 @@ impl Console {
         if level < self.log_filter {
             return;
         }
-        self.tabs[0].scroll.feed(&format_log(stamp_ms, level, name, text));
+        let offset = self.tz_offset.map(Some).unwrap_or_else(|| local_offset(stamp_ms / 1000));
+        self.tabs[0].scroll.feed(&format_log(stamp_ms, offset, level, name, text));
         self.touch(0);
     }
 
@@ -619,6 +657,18 @@ impl Console {
     pub fn log_local(&mut self, level: u8, name: &str, text: &str) {
         let now = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_millis() as u64);
         self.add_log(now, level, name, text);
+    }
+
+    /// Use a fixed UTC offset (seconds) for log times instead of the local zone.
+    pub fn set_tz_offset(&mut self, secs: i64) {
+        self.tz_offset = Some(secs);
+    }
+
+    /// Record the request id given to the SHELL_COMPLETE just sent for `tab`.
+    pub fn note_complete_req(&mut self, tab: &str, req: u32) {
+        if let Some(i) = self.find(tab) {
+            self.tabs[i].complete_req = Some(req);
+        }
     }
 
     pub fn log_filter(&self) -> u8 {
@@ -820,6 +870,7 @@ mod tests {
     #[test]
     fn rosout_tab_receives_logs_and_cannot_close() {
         let mut c = Console::new();
+        c.set_tz_offset(0);
         assert_eq!(c.tabs(), [ROSOUT]);
         assert_eq!(c.close_tab(0), None);
         assert_eq!(c.tabs(), [ROSOUT]);
@@ -982,5 +1033,51 @@ mod tests {
         assert_eq!(wrap_row(&Row::Folded { block: 1, hidden: 5 }, 8), [Row::Folded { block: 1, hidden: 5 }]);
         let empty = Row::Line(Line { spans: vec![] });
         assert_eq!(wrap_row(&empty, 8), [empty]);
+    }
+
+    #[test]
+    fn ctrl_c_works_in_search_and_with_candidates_shown() {
+        let mut c = console_with_tab("a");
+        typed(&mut c, "ls");
+        c.key("Enter");
+        c.key("Ctrl");
+        c.key("r");
+        assert!(c.input_display().0.starts_with("(reverse-i-search)"));
+        c.key("Ctrl");
+        assert_eq!(c.key("c"), vec![input("a", &[0x03])]);
+        assert!(!c.input_display().0.starts_with("(reverse"));
+
+        typed(&mut c, "ec");
+        c.key("Tab");
+        c.on_event(ShellEvent::Completion {
+            req: 1,
+            tab: "a".into(),
+            start: 0,
+            candidates: vec!["echo".into(), "ecryptfs".into()],
+        });
+        assert_eq!(c.candidates().len(), 2);
+        c.key("Ctrl");
+        assert_eq!(c.key("c"), vec![input("a", &[0x03])]);
+        assert!(c.candidates().is_empty());
+    }
+
+    #[test]
+    fn completion_is_matched_by_req() {
+        let mut c = console_with_tab("a");
+        typed(&mut c, "ech");
+        c.key("Tab");
+        c.note_complete_req("a", 7);
+        c.on_event(ShellEvent::Completion { req: 6, tab: "a".into(), start: 0, candidates: vec!["old".into()] });
+        assert_eq!(c.input_display().0, "ech");
+        c.on_event(ShellEvent::Completion { req: 7, tab: "a".into(), start: 0, candidates: vec!["echo".into()] });
+        assert_eq!(c.input_display().0, "echo ");
+    }
+
+    #[test]
+    fn log_time_uses_offset_or_marks_utc() {
+        let b = |o| String::from_utf8(format_log(3_723_000, o, 20, "n", "t")).unwrap();
+        assert_eq!(b(Some(32_400)), "10:02:03 [INFO] n: t\r\n");
+        assert_eq!(b(None), "01:02:03Z [INFO] n: t\r\n");
+        assert_eq!(b(Some(-7200)), "23:02:03 [INFO] n: t\r\n");
     }
 }

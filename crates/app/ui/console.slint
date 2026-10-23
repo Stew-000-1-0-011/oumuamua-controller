@@ -57,7 +57,7 @@ component Chip inherits Rectangle {
     property <bool> fired: false;
 
     min-width: 44px;
-    min-height: 40px;
+    min-height: 44px;
     border-radius: 6px;
     background: root.selected ? Theme.accent : ta.pressed ? Theme.panel-hi : #262e39;
 
@@ -109,6 +109,7 @@ component RowView inherits Rectangle {
                     text: sp.text;
                     color: sp.fg;
                     font-size: 14px;
+                    font-family: "DejaVu Sans Mono";
                     font-weight: sp.bold ? 700 : 400;
                     vertical-alignment: center;
                     overflow: clip;
@@ -130,7 +131,7 @@ export component ConsolePanel inherits Rectangle {
     VerticalLayout {
         // Tabs. Swipe left/right on the bar to move between them.
         Rectangle {
-            height: 46px;
+            height: 52px;
             background: #161b22;
             HorizontalLayout {
                 padding: 3px;
@@ -240,7 +241,7 @@ export component ConsolePanel inherits Rectangle {
         }
         // Completion candidates
         if ConsoleState.candidates.length > 0: Rectangle {
-            height: 44px;
+            height: 52px;
             background: #161b22;
             Flickable {
                 content-width: cands.preferred-width;
@@ -257,7 +258,7 @@ export component ConsolePanel inherits Rectangle {
         }
         // Quick commands: tap inserts, hold removes.
         if ConsoleState.is-shell: Rectangle {
-            height: 44px;
+            height: 52px;
             background: #161b22;
             Flickable {
                 content-width: quick.preferred-width;
@@ -285,19 +286,19 @@ export component ConsolePanel inherits Rectangle {
                 spacing: 0px;
                 alignment: start;
                 Text { text: "$ "; color: Theme.ok; font-size: 16px; vertical-alignment: center; }
-                Text { text: ConsoleState.input-before; color: Theme.text; font-size: 16px; vertical-alignment: center; }
+                Text { text: ConsoleState.input-before; color: Theme.text; font-size: 16px; font-family: "DejaVu Sans Mono"; vertical-alignment: center; }
                 Rectangle {
                     width: 2px;
                     height: 22px;
                     y: (parent.height - self.height) / 2;
                     background: Theme.accent;
                 }
-                Text { text: ConsoleState.input-after; color: Theme.text; font-size: 16px; vertical-alignment: center; }
+                Text { text: ConsoleState.input-after; color: Theme.text; font-size: 16px; font-family: "DejaVu Sans Mono"; vertical-alignment: center; }
             }
             TouchArea { clicked => { ConsoleState.kbd-shown = true; } }
         }
         if !ConsoleState.is-shell: Rectangle {
-            height: 48px;
+            height: 52px;
             background: #161b22;
             HorizontalLayout {
                 padding: 3px;
