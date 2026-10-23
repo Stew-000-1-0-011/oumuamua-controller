@@ -1,0 +1,89 @@
+import { Theme } from "theme.slint";
+
+component TabButton inherits Rectangle {
+    in property <string> label;
+    in property <bool> active;
+    callback clicked();
+    min-height: Theme.tap;
+    background: root.active ? Theme.accent : Theme.panel;
+    border-radius: 8px;
+    Text {
+        text: root.label;
+        color: Theme.text;
+        font-size: Theme.font;
+        font-weight: root.active ? 700 : 400;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+    TouchArea { clicked => { root.clicked(); } }
+}
+
+// The right-edge strip: page switch, link status, emergency stop / release.
+// The parent places it inside the safe area.
+export component Strip inherits Rectangle {
+    // 0 output, 1 manual, 2 auto
+    in-out property <int> page;
+    // Link status text ("接続中", "切断" ...) and its colour.
+    in property <string> conn-text;
+    in property <color> conn-color: Theme.dim;
+    // Round-trip delay in ms; negative means unknown.
+    in property <int> rtt-ms: -1;
+    // True while the phone latch or the robot is stopped: the button becomes "解除".
+    in property <bool> stopped;
+    // Robot mode text ("手動" / "自動" / "停止"), empty when unknown.
+    in property <string> mode-text;
+    callback stop-pressed();
+    callback release-pressed();
+
+    background: Theme.bg;
+    VerticalLayout {
+        padding: 6px;
+        spacing: 6px;
+        TabButton { label: "出力"; active: root.page == 0; clicked => { root.page = 0; } }
+        TabButton { label: "手動"; active: root.page == 1; clicked => { root.page = 1; } }
+        TabButton { label: "自動"; active: root.page == 2; clicked => { root.page = 2; } }
+        Rectangle {
+            VerticalLayout {
+                alignment: center;
+                spacing: 2px;
+                Text {
+                    text: root.conn-text;
+                    color: root.conn-color;
+                    font-size: 14px;
+                    horizontal-alignment: center;
+                    wrap: word-wrap;
+                }
+                Text {
+                    text: root.rtt-ms >= 0 ? root.rtt-ms + " ms" : "- ms";
+                    color: Theme.text;
+                    font-size: 14px;
+                    horizontal-alignment: center;
+                }
+                Text {
+                    text: root.mode-text;
+                    color: root.stopped ? Theme.warn : Theme.ok;
+                    font-size: 14px;
+                    horizontal-alignment: center;
+                }
+            }
+        }
+        Rectangle {
+            min-height: 72px;
+            background: root.stopped ? Theme.warn : Theme.danger;
+            border-radius: 10px;
+            Text {
+                text: root.stopped ? "解除" : "全停止";
+                color: root.stopped ? #000000 : #ffffff;
+                font-size: 20px;
+                font-weight: 700;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+            }
+            TouchArea {
+                clicked => {
+                    if root.stopped { root.release-pressed(); } else { root.stop-pressed(); }
+                }
+            }
+        }
+    }
+}

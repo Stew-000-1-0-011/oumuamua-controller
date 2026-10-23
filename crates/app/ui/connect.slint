@@ -1,0 +1,76 @@
+import { Theme } from "theme.slint";
+import { LineEdit, ScrollView } from "std-widgets.slint";
+
+export struct Beacon { name: string, addr: string }
+
+component Btn inherits Rectangle {
+    in property <string> label;
+    in property <color> fill: Theme.accent;
+    in property <bool> enabled: true;
+    callback clicked();
+    min-height: Theme.tap;
+    min-width: 120px;
+    background: root.enabled ? root.fill : Theme.panel-hi;
+    border-radius: 8px;
+    Text { text: root.label; color: Theme.text; font-size: Theme.font; horizontal-alignment: center; vertical-alignment: center; }
+    TouchArea { enabled: root.enabled; clicked => { root.clicked(); } }
+}
+
+// Connection screen: robots announced on the network, an IP box, connect buttons.
+export component ConnectScreen inherits Rectangle {
+    // Robots heard on the beacon port.
+    in property <[Beacon]> beacons;
+    // Text of the IP box (host or host:port). Initialised with the last target.
+    in-out property <string> target;
+    // Status line ("探しています…", "接続中…", reason of a rejection ...).
+    in property <string> status;
+    in property <color> status-color: Theme.dim;
+    // takeover = true for "乗っ取って接続".
+    callback connect(string, bool);
+
+    background: Theme.bg;
+    HorizontalLayout {
+        padding: 16px;
+        spacing: 16px;
+        VerticalLayout {
+            spacing: 8px;
+            Text { text: "ロボットを選ぶ"; color: Theme.text; font-size: 20px; }
+            ScrollView {
+                VerticalLayout {
+                    spacing: 6px;
+                    for b in root.beacons: Rectangle {
+                        height: Theme.tap;
+                        background: Theme.panel;
+                        border-radius: 8px;
+                        Text {
+                            x: 12px;
+                            text: b.name + "  (" + b.addr + ")";
+                            color: Theme.text;
+                            font-size: Theme.font;
+                            vertical-alignment: center;
+                        }
+                        TouchArea { clicked => { root.target = b.addr; } }
+                    }
+                }
+            }
+        }
+        VerticalLayout {
+            spacing: 10px;
+            alignment: start;
+            Text { text: "IP アドレス"; color: Theme.text; font-size: 20px; }
+            LineEdit {
+                text <=> root.target;
+                placeholder-text: "192.168.0.10";
+                font-size: 20px;
+                min-height: Theme.tap;
+                input-type: text;
+            }
+            HorizontalLayout {
+                spacing: 10px;
+                Btn { label: "接続"; clicked => { root.connect(root.target, false); } }
+                Btn { label: "乗っ取って接続"; fill: Theme.warn; clicked => { root.connect(root.target, true); } }
+            }
+            Text { text: root.status; color: root.status-color; font-size: Theme.font; wrap: word-wrap; }
+        }
+    }
+}

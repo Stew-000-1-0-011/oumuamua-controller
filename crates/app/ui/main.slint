@@ -1,0 +1,86 @@
+import { Palette } from "std-widgets.slint";
+import { Theme } from "theme.slint";
+import { Strip } from "strip.slint";
+import { ConnectScreen, Beacon } from "connect.slint";
+
+export { Beacon }
+
+// Placeholder pages; Tasks 12-16 replace the bodies.
+component OutputPage inherits Rectangle { background: Theme.bg; Text { text: "出力"; color: Theme.dim; } }
+component ManualPage inherits Rectangle { background: Theme.bg; Text { text: "手動"; color: Theme.dim; } }
+component AutoPage inherits Rectangle { background: Theme.bg; Text { text: "自動"; color: Theme.dim; } }
+
+// Properties are set by glue.rs; later tasks add more but keep these stable.
+export component MainWindow inherits Window {
+    title: "oumuamua";
+    init => { Palette.color-scheme = ColorScheme.dark; }
+    background: Theme.bg;
+    preferred-width: 1280px;
+    preferred-height: 640px;
+
+    // Visible page: 0 output, 1 manual, 2 auto.
+    in-out property <int> page: 0;
+    // False shows the connection screen instead of the pages.
+    in property <bool> connected: false;
+    // Strip: link status text/colour, rtt in ms (-1 unknown), stop latch ("解除" shown).
+    in property <string> conn-text: "未接続";
+    in property <color> conn-color: Theme.dim;
+    in property <int> rtt-ms: -1;
+    in property <bool> stopped: false;
+    // Robot mode: 0 manual, 1 auto, 2 stopped, -1 unknown.
+    in property <int> mode: -1;
+    // Failure reason shown at the bottom of the content area ("" = hidden).
+    in property <string> notice;
+    // Connection screen.
+    in property <[Beacon]> beacons;
+    in-out property <string> target;
+    in property <string> connect-status;
+    in property <color> connect-status-color: Theme.dim;
+
+    callback connect(string, bool);
+    callback stop-pressed();
+    callback release-pressed();
+
+    property <length> inset-top: root.safe-area-insets.top;
+    property <length> inset-bottom: root.safe-area-insets.bottom;
+    property <length> inset-left: root.safe-area-insets.left;
+    property <length> inset-right: root.safe-area-insets.right;
+
+    HorizontalLayout {
+        padding-top: root.inset-top;
+        padding-bottom: root.inset-bottom;
+        padding-left: root.inset-left;
+        padding-right: root.inset-right;
+        Rectangle {
+            if !root.connected: ConnectScreen {
+                beacons: root.beacons;
+                target <=> root.target;
+                status: root.connect-status;
+                status-color: root.connect-status-color;
+                connect(t, takeover) => { root.connect(t, takeover); }
+            }
+            if root.connected: Rectangle {
+                if root.page == 0: OutputPage { }
+                if root.page == 1: ManualPage { }
+                if root.page == 2: AutoPage { }
+                if root.notice != "": Rectangle {
+                    y: parent.height - self.height;
+                    height: 40px;
+                    background: Theme.danger;
+                    Text { text: root.notice; color: #ffffff; font-size: Theme.font; horizontal-alignment: center; vertical-alignment: center; }
+                }
+            }
+        }
+        Strip {
+            width: Theme.strip-width;
+            page <=> root.page;
+            conn-text: root.conn-text;
+            conn-color: root.conn-color;
+            rtt-ms: root.rtt-ms;
+            stopped: root.stopped;
+            mode-text: root.mode == 0 ? "手動" : root.mode == 1 ? "自動" : root.mode == 2 ? "停止" : "";
+            stop-pressed => { root.stop-pressed(); }
+            release-pressed => { root.release-pressed(); }
+        }
+    }
+}
