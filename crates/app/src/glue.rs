@@ -1,12 +1,12 @@
 //! Connects the Slint window to the link: callbacks in, a 33 ms timer out.
 
-use crate::model::{AppModel, ConnState};
+use crate::model::{AppModel, ConnState, StopLatch};
 use crate::{Beacon, MainWindow, storage};
 use link::{Client, ControlInput, Discovery, LinkEvent};
 use proto::{Mode, Msg};
 use slint::{ComponentHandle, Model, ModelRc, SharedString, Timer, TimerMode, VecModel};
 use std::cell::RefCell;
-use std::net::{SocketAddr, ToSocketAddrs};
+use std::net::{IpAddr, SocketAddr};
 use std::rc::Rc;
 use std::sync::mpsc::Receiver;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -36,26 +36,20 @@ fn new_client_name() -> String {
     format!("phone-{:08x}", h.finish() as u32)
 }
 
-/// "host" or "host:port" (default port `proto::PORT`) to a socket address.
+/// "ip" or "ip:port" (default port `proto::PORT`). No DNS lookup: this runs on the UI thread.
 pub fn parse_target(text: &str) -> Result<SocketAddr, String> {
     let t = text.trim();
     if t.is_empty() {
         return Err("IP アドレスを入力してください".into());
     }
-    let with_port = if t.parse::<SocketAddr>().is_ok() {
-        t.to_owned()
-    } else if t.parse::<std::net::Ipv6Addr>().is_ok() {
-        format!("[{t}]:{}", proto::PORT)
-    } else if t.rsplit_once(':').is_some_and(|(_, p)| p.parse::<u16>().is_ok()) {
-        t.to_owned()
-    } else {
-        format!("{t}:{}", proto::PORT)
-    };
-    with_port
-        .to_socket_addrs()
-        .ok()
-        .and_then(|mut a| a.next())
-        .ok_or_else(|| format!("宛先を解釈できません: {t}"))
+    if let Ok(a) = t.parse::<SocketAddr>() {
+        return Ok(a);
+    }
+    let t6 = t.trim_start_matches('[').trim_end_matches(']');
+    if let Ok(ip) = t6.parse::<IpAddr>() {
+        return Ok(SocketAddr::new(ip, proto::PORT));
+    }
+    Err(format!("IP アドレスで入力してください (ホスト名は使えません): {t}"))
 }
 
 struct Glue {
@@ -70,7 +64,7 @@ struct Glue {
     /// Phone-side emergency stop latch; sent as `ControlInput.estop`.
     control: ControlInput,
     /// Request id of the RELEASE_STOP we are waiting on.
-    pending_release: Option<u32>,
+    latch: StopLatch,
     notice: String,
     status: String,
     name: String,
@@ -96,28 +90,32 @@ impl Glue {
         self.client = None;
         self.model.begin_connect();
         self.notice.clear();
-        self.pending_release = None;
-        self.control = ControlInput::default();
+        self.latch.on_link_reset();
+        // The emergency-stop latch survives reconnects; motion inputs restart from zero.
+        self.control = ControlInput { estop: self.latch.estop(), ..ControlInput::default() };
         let (client, rx) = Client::start(addr, self.name.clone(), takeover);
         self.client = Some(client);
+        self.push_control();
         self.rx = Some(rx);
         self.status = format!("{addr} に接続中…");
     }
 
     fn press_stop(&mut self) {
-        self.control.estop = true;
+        self.latch.press();
+        self.control.estop = self.latch.estop();
         self.notice.clear();
         self.push_control();
     }
 
     fn press_release(&mut self) {
-        self.control.estop = false;
+        let Some(c) = &self.client else { return };
+        let req = c.next_req();
+        self.latch.release_sent(req);
+        self.control.estop = self.latch.estop();
         self.notice.clear();
         self.push_control();
         if let Some(c) = &self.client {
-            let req = c.next_req();
             c.send(Msg::ReleaseStop { req });
-            self.pending_release = Some(req);
         }
     }
 
@@ -141,17 +139,20 @@ impl Glue {
                 // The client thread idles after these; release it so Connect starts a fresh one.
                 self.client = None;
                 self.rx = None;
-                self.control.estop = false;
+                self.latch.on_link_reset();
+                self.control.estop = self.latch.estop();
             }
             self.model.apply(ev);
         }
-        if let Some(req) = self.pending_release
-            && let Some((_, ok, msg)) = self.model.results.iter().find(|r| r.0 == req)
+        if let Some(req) = self.latch.pending()
+            && let Some((_, ok, msg)) = self.model.results.iter().find(|r| r.0 == req).cloned()
         {
+            self.latch.on_result(req, ok);
+            self.control.estop = self.latch.estop();
+            self.push_control();
             if !ok {
                 self.notice = format!("解除できません: {msg}");
             }
-            self.pending_release = None;
         }
         self.refresh();
     }
@@ -166,6 +167,7 @@ impl Glue {
                 (true, "接続", slint::Color::from_rgb_u8(0x3f, 0xb9, 0x50), rtt_ms.map_or(-1, |v| v as i32))
             }
             ConnState::Lost => (true, "切断", slint::Color::from_rgb_u8(0xd1, 0x34, 0x2f), -1),
+            ConnState::TakenOver(_) => (false, "乗っ取られました", slint::Color::from_rgb_u8(0xd1, 0x34, 0x2f), -1),
             ConnState::Rejected(_) => (false, "拒否", slint::Color::from_rgb_u8(0xd1, 0x34, 0x2f), -1),
         };
         let mode = self.model.state().map_or(-1, |s| match s.mode {
@@ -181,6 +183,7 @@ impl Glue {
         w.set_stopped(self.control.estop || mode == 2);
         w.set_notice(self.notice.as_str().into());
         let (status, status_color) = match &conn {
+            ConnState::TakenOver(r) => (format!("別のスマホに乗っ取られました: {r}"), slint::Color::from_rgb_u8(0xd1, 0x34, 0x2f)),
             ConnState::Rejected(r) => (format!("接続できません: {r}"), slint::Color::from_rgb_u8(0xd1, 0x34, 0x2f)),
             ConnState::Connecting => (self.status.clone(), slint::Color::from_rgb_u8(0xd9, 0xa2, 0x1b)),
             _ if self.beacons.is_empty() && self.status.is_empty() => {
@@ -220,7 +223,7 @@ pub fn start(window: &MainWindow) -> Rc<RefCell<GlueHandle>> {
         beacons: Vec::new(),
         beacons_model,
         control: ControlInput::default(),
-        pending_release: None,
+        latch: StopLatch::default(),
         notice: String::new(),
         status,
         name: client_name(),
@@ -268,6 +271,8 @@ mod tests {
         assert_eq!(parse_target(" 10.0.0.2:5000 ").unwrap(), "10.0.0.2:5000".parse().unwrap());
         assert!(parse_target("").is_err());
         assert!(parse_target("not an address").is_err());
+        assert!(parse_target("robot.local").is_err());
+        assert!(parse_target("::1").unwrap().is_ipv6());
     }
 
     #[test]

@@ -11,6 +11,8 @@ pub enum ConnState {
     Connected { rtt_ms: Option<u32> },
     Lost,
     Rejected(String),
+    /// Another phone took over (BYE).
+    TakenOver(String),
 }
 
 /// Shell/log traffic collected for the console (Task 16).
@@ -48,6 +50,51 @@ pub struct TaskMemory {
     pub holding: [bool; 2],
     pub picked: Vec<u8>,
     pub placed: Vec<(u8, u8)>,
+}
+
+/// Nothing drains shell events until the console exists; keep memory bounded.
+pub const SHELL_EVENTS_KEPT: usize = 10_000;
+
+/// The phone-side emergency stop. It survives reconnects, rejections and BYE; only a
+/// RELEASE_STOP that the robot confirms clears it.
+#[derive(Debug, Default, Clone, PartialEq)]
+pub struct StopLatch {
+    estop: bool,
+    pending: Option<u32>,
+}
+
+impl StopLatch {
+    pub fn estop(&self) -> bool {
+        self.estop
+    }
+    /// Request id of the RELEASE_STOP awaiting its RESULT.
+    pub fn pending(&self) -> Option<u32> {
+        self.pending
+    }
+    pub fn press(&mut self) {
+        self.estop = true;
+        self.pending = None;
+    }
+    /// 解除 pressed and RELEASE_STOP `req` sent: estop is tentatively off.
+    pub fn release_sent(&mut self, req: u32) {
+        self.estop = false;
+        self.pending = Some(req);
+    }
+    /// RESULT for `req`; a failed release restores the latch.
+    pub fn on_result(&mut self, req: u32, ok: bool) {
+        if self.pending == Some(req) {
+            self.pending = None;
+            if !ok {
+                self.estop = true;
+            }
+        }
+    }
+    /// New client, Rejected or Bye: the estop stays; an unanswered release counts as failed.
+    pub fn on_link_reset(&mut self) {
+        if self.pending.take().is_some() {
+            self.estop = true;
+        }
+    }
 }
 
 pub const RESULTS_KEPT: usize = 20;
@@ -106,9 +153,7 @@ impl AppModel {
                 self.conn = ConnState::Connected { rtt_ms: None };
             }
             LinkEvent::Rejected { reason } => self.conn = ConnState::Rejected(reason),
-            LinkEvent::Bye { reason } => {
-                self.conn = ConnState::Rejected(reason);
-            }
+            LinkEvent::Bye { reason } => self.conn = ConnState::TakenOver(reason),
             LinkEvent::State { body, rtt_ms } => {
                 let rtt = rtt_ms.or(match self.conn {
                     ConnState::Connected { rtt_ms } => rtt_ms,
@@ -145,17 +190,25 @@ impl AppModel {
             Msg::TaskMemory { holding, picked, placed } => {
                 self.task_memory = Some(TaskMemory { holding, picked, placed });
             }
-            Msg::ShellOpened { tab, replay } => self.shell.push(ShellEvent::Opened { tab, replay }),
-            Msg::ShellOutput { tab, data } => self.shell.push(ShellEvent::Output { tab, data }),
+            Msg::ShellOpened { tab, replay } => self.push_shell(ShellEvent::Opened { tab, replay }),
+            Msg::ShellOutput { tab, data } => self.push_shell(ShellEvent::Output { tab, data }),
             Msg::ShellCompletion { req, tab, start, candidates } => {
-                self.shell.push(ShellEvent::Completion { req, tab, start, candidates });
+                self.push_shell(ShellEvent::Completion { req, tab, start, candidates });
             }
-            Msg::ShellClosed { tab, reason } => self.shell.push(ShellEvent::Closed { tab, reason }),
+            Msg::ShellClosed { tab, reason } => self.push_shell(ShellEvent::Closed { tab, reason }),
             Msg::Log { stamp_ms, level, name, text } => {
-                self.shell.push(ShellEvent::Log { stamp_ms, level, name, text });
+                self.push_shell(ShellEvent::Log { stamp_ms, level, name, text });
             }
             // TaskDone and phone-to-robot kinds: nothing to keep here yet.
             _ => {}
+        }
+    }
+
+    fn push_shell(&mut self, e: ShellEvent) {
+        self.shell.push(e);
+        if self.shell.len() > SHELL_EVENTS_KEPT {
+            let drop = self.shell.len() - SHELL_EVENTS_KEPT;
+            self.shell.drain(..drop);
         }
     }
 
@@ -243,7 +296,7 @@ mod tests {
         m.apply(LinkEvent::Rejected { reason: "busy".into() });
         assert_eq!(m.connection(), ConnState::Rejected("busy".into()));
         m.apply(LinkEvent::Bye { reason: "taken over".into() });
-        assert_eq!(m.connection(), ConnState::Rejected("taken over".into()));
+        assert_eq!(m.connection(), ConnState::TakenOver("taken over".into()));
     }
 
     #[test]
@@ -290,6 +343,46 @@ mod tests {
         assert!(m.path_shape("q").is_none());
         assert_eq!(m.task_memory().unwrap().placed, vec![(0, 1)]);
         assert_eq!(m.scan(), &[(1.0, 2.0)]);
+    }
+
+    #[test]
+    fn latch_survives_reconnect_bye_and_rejected() {
+        let mut l = StopLatch::default();
+        l.press();
+        l.on_link_reset(); // new Client / Rejected / Bye
+        assert!(l.estop());
+        l.on_link_reset();
+        assert!(l.estop());
+    }
+
+    #[test]
+    fn latch_release_ok_clears_and_fail_restores() {
+        let mut l = StopLatch::default();
+        l.press();
+        l.release_sent(7);
+        assert!(!l.estop());
+        l.on_result(8, false); // unrelated
+        assert!(!l.estop());
+        l.on_result(7, true);
+        assert!(!l.estop() && l.pending().is_none());
+        l.press();
+        l.release_sent(9);
+        l.on_result(9, false);
+        assert!(l.estop());
+        l.release_sent(10);
+        l.on_link_reset(); // link dropped before the RESULT
+        assert!(l.estop());
+    }
+
+    #[test]
+    fn shell_events_are_capped() {
+        let mut m = AppModel::new();
+        for i in 0..(SHELL_EVENTS_KEPT + 5) {
+            m.apply(LinkEvent::Msg(Msg::ShellClosed { tab: i.to_string(), reason: String::new() }));
+        }
+        let ev = m.take_shell_events();
+        assert_eq!(ev.len(), SHELL_EVENTS_KEPT);
+        assert!(matches!(&ev[0], ShellEvent::Closed { tab, .. } if tab == "5"));
     }
 
     #[test]
