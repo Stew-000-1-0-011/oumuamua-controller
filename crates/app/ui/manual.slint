@@ -333,6 +333,7 @@ export component ManualPage inherits Rectangle {
                     TouchArea {
                         enabled: root.reset-enabled;
                         pointer-event(e) => {
+                            if e.kind == PointerEventKind.cancel { root.reset-armed = false; return; }
                             if e.button != PointerEventButton.left { return; }
                             if e.kind == PointerEventKind.down { root.reset-armed = true; root.reset-pressed(); }
                             else if e.kind == PointerEventKind.up || e.kind == PointerEventKind.cancel { root.reset-armed = false; }

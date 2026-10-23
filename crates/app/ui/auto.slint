@@ -261,6 +261,7 @@ export component AutoPage inherits Rectangle {
                             TouchArea {
                                 enabled: root.forget-enabled;
                                 pointer-event(e) => {
+                                    if e.kind == PointerEventKind.cancel { root.forget-armed = false; return; }
                                     if e.button != PointerEventButton.left { return; }
                                     if e.kind == PointerEventKind.down { root.forget-armed = true; root.forget-pressed(); }
                                     else if e.kind == PointerEventKind.up || e.kind == PointerEventKind.cancel { root.forget-armed = false; }
