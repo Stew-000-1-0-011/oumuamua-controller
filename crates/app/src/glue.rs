@@ -3,7 +3,7 @@
 use crate::auto;
 use crate::console::{self, Console, PromptKind};
 use crate::manual::{self, Manual};
-use crate::model::{AppModel, ConnState, DemoSlot, StopLatch};
+use crate::model::{end_session, AppModel, ConnState, DemoSlot, StopLatch};
 use crate::map::{self, PaneState, Scene};
 use crate::{Beacon, ConsoleRow, ConsoleSpan, ConsoleState, ConsoleTabInfo, MainWindow, PresetInfo, WheelInfo, storage};
 use link::{Client, ControlInput, Discovery, LinkEvent};
@@ -1046,6 +1046,17 @@ impl Glue {
         }
     }
 
+    /// 接続先: BYE (by dropping the client), stop the demo, back to the connection screen.
+    fn leave_robot(&mut self) {
+        self.client = None;
+        self.rx = None;
+        end_session(&mut self.model, &mut self.demo, &mut self.latch);
+        self.control = ControlInput { estop: self.latch.estop(), ..ControlInput::default() };
+        self.manual.release_all();
+        self.notice.clear();
+        self.status.clear();
+    }
+
     fn connect_addr(&mut self, addr: SocketAddr, takeover: bool) {
         // Drop the old client first: its thread uses the same session socket space.
         self.client = None;
@@ -1271,6 +1282,12 @@ pub fn start(window: &MainWindow) -> Rc<RefCell<GlueHandle>> {
         window.on_connect_demo(move || {
             let mut g = g.borrow_mut();
             g.connect_demo();
+            g.refresh();
+        });
+        let g = glue.clone();
+        window.on_disconnect(move || {
+            let mut g = g.borrow_mut();
+            g.leave_robot();
             g.refresh();
         });
         let g = glue.clone();

@@ -24,6 +24,8 @@ export component MainWindow inherits Window {
     // Connected to the in-app demo robot (badge in the strip and the output band).
     in property <bool> demo: false;
     callback connect-demo();
+    callback disconnect();
+    property <bool> confirm-leave: false;
     // Strip: link status text/colour, rtt in ms (-1 unknown), stop latch ("解除" shown).
     in property <string> conn-text: "未接続";
     in property <color> conn-color: Theme.dim;
@@ -275,9 +277,43 @@ export component MainWindow inherits Window {
             rtt-ms: root.rtt-ms;
             stopped: root.stopped;
             demo: root.demo;
+            connected: root.connected;
+            disconnect-pressed => { root.confirm-leave = true; }
             mode-text: root.mode == 0 ? "手動" : root.mode == 1 ? "自動" : root.mode == 2 ? "停止" : "";
             stop-pressed => { root.stop-pressed(); }
             release-pressed => { root.release-pressed(); }
+        }
+    }
+    if root.confirm-leave: Rectangle {
+        background: #000000a0;
+        TouchArea { }
+        Rectangle {
+            width: 440px;
+            height: 160px;
+            background: Theme.panel;
+            border-radius: 12px;
+            VerticalLayout {
+                padding: 16px;
+                spacing: 16px;
+                Text { text: "切断して接続先を選びますか"; color: Theme.text; font-size: 20px; horizontal-alignment: center; vertical-alignment: center; }
+                HorizontalLayout {
+                    spacing: 16px;
+                    Rectangle {
+                        height: Theme.tap;
+                        background: Theme.panel-hi;
+                        border-radius: 8px;
+                        Text { text: "いいえ"; color: Theme.text; font-size: 18px; horizontal-alignment: center; vertical-alignment: center; }
+                        TouchArea { clicked => { root.confirm-leave = false; } }
+                    }
+                    Rectangle {
+                        height: Theme.tap;
+                        background: Theme.accent;
+                        border-radius: 8px;
+                        Text { text: "はい"; color: Theme.text; font-size: 18px; horizontal-alignment: center; vertical-alignment: center; }
+                        TouchArea { clicked => { root.confirm-leave = false; root.disconnect(); } }
+                    }
+                }
+            }
         }
     }
 }

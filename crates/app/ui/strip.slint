@@ -34,6 +34,9 @@ export component Strip inherits Rectangle {
     in property <string> mode-text;
     // Connected to the in-app demo robot, not a real one.
     in property <bool> demo;
+    // Show the 接続先 button (connected pages only).
+    in property <bool> connected;
+    callback disconnect-pressed();
     callback stop-pressed();
     callback release-pressed();
 
@@ -74,6 +77,13 @@ export component Strip inherits Rectangle {
                     horizontal-alignment: center;
                 }
             }
+        }
+        if root.connected: Rectangle {
+            height: Theme.tap;
+            background: Theme.panel;
+            border-radius: 8px;
+            Text { text: "接続先"; color: Theme.text; font-size: 16px; horizontal-alignment: center; vertical-alignment: center; }
+            TouchArea { clicked => { root.disconnect-pressed(); } }
         }
         Rectangle {
             min-height: 72px;

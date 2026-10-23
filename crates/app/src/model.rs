@@ -131,6 +131,14 @@ impl<T> DemoSlot<T> {
     }
 }
 
+/// The user left the robot (接続先): the demo robot stops, the model returns to the connection
+/// screen, and the phone's stop latch is kept (it only forgets a RELEASE_STOP in flight).
+pub fn end_session<T>(model: &mut AppModel, demo: &mut DemoSlot<T>, latch: &mut StopLatch) {
+    demo.release();
+    model.reset();
+    latch.on_link_reset();
+}
+
 #[derive(Debug)]
 pub struct AppModel {
     conn: ConnState,
@@ -482,5 +490,20 @@ mod tests {
         assert_eq!(stopped.get(), 2);
         drop(slot); // app exit
         assert_eq!(stopped.get(), 3);
+    }
+
+    #[test]
+    fn leaving_the_demo_drops_it_and_keeps_the_latch() {
+        let mut model = AppModel::new();
+        let mut demo: DemoSlot<u8> = DemoSlot::default();
+        let mut latch = StopLatch::default();
+        model.begin_connect();
+        model.apply(LinkEvent::Connected { robot_name: "demo".into() });
+        demo.start(1);
+        latch.press();
+        end_session(&mut model, &mut demo, &mut latch);
+        assert!(!demo.active());
+        assert_eq!(model.connection(), ConnState::Searching);
+        assert!(latch.estop());
     }
 }
