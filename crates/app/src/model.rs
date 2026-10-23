@@ -109,6 +109,9 @@ pub struct AppModel {
     field: Option<Field>,
     path_shapes: HashMap<String, Vec<(i16, i16)>>,
     task_memory: Option<TaskMemory>,
+    /// Latest TASK_DONE `(kind, ok, message)` and how many have arrived.
+    task_done: Option<(u8, bool, String)>,
+    task_done_count: u64,
     scan: Vec<(f32, f32)>,
     /// `(req, ok, message)`, oldest first, last 20.
     pub results: VecDeque<(u32, bool, String)>,
@@ -131,6 +134,8 @@ impl AppModel {
             field: None,
             path_shapes: HashMap::new(),
             task_memory: None,
+            task_done: None,
+            task_done_count: 0,
             scan: Vec::new(),
             results: VecDeque::new(),
             shell: Vec::new(),
@@ -200,7 +205,11 @@ impl AppModel {
             Msg::Log { stamp_ms, level, name, text } => {
                 self.push_shell(ShellEvent::Log { stamp_ms, level, name, text });
             }
-            // TaskDone and phone-to-robot kinds: nothing to keep here yet.
+            Msg::TaskDone { kind, ok, message } => {
+                self.task_done = Some((kind, ok, message));
+                self.task_done_count += 1;
+            }
+            // Phone-to-robot kinds: nothing to keep here yet.
             _ => {}
         }
     }
@@ -236,6 +245,10 @@ impl AppModel {
     }
     pub fn task_memory(&self) -> Option<&TaskMemory> {
         self.task_memory.as_ref()
+    }
+    /// The latest TASK_DONE and a counter that grows with each one.
+    pub fn task_done(&self) -> (u64, Option<&(u8, bool, String)>) {
+        (self.task_done_count, self.task_done.as_ref())
     }
     pub fn scan(&self) -> &[(f32, f32)] {
         &self.scan
@@ -396,5 +409,16 @@ mod tests {
         assert_eq!(ev.len(), 2);
         assert!(matches!(ev[1], ShellEvent::Log { level: 2, .. }));
         assert!(m.take_shell_events().is_empty());
+    }
+
+    #[test]
+    fn task_done_is_kept_and_counted() {
+        let mut m = AppModel::new();
+        assert_eq!(m.task_done(), (0, None));
+        m.apply(LinkEvent::Msg(Msg::TaskDone { kind: 2, ok: false, message: "blocked".into() }));
+        let (n, d) = m.task_done();
+        assert_eq!((n, d.cloned()), (1, Some((2, false, "blocked".to_owned()))));
+        m.begin_connect();
+        assert_eq!(m.task_done().0, 0);
     }
 }

@@ -1,5 +1,6 @@
 //! Connects the Slint window to the link: callbacks in, a 33 ms timer out.
 
+use crate::auto;
 use crate::manual::{self, Manual};
 use crate::model::{AppModel, ConnState, StopLatch};
 use crate::map::{self, PaneState, Scene};
@@ -19,6 +20,8 @@ const TICK: Duration = Duration::from_millis(33);
 const MAP_INTERVAL: Duration = Duration::from_millis(50);
 /// The pane id of the output page's map.
 const OUTPUT_MAP: i32 = 0;
+/// The pane id of the auto page's map (the one that picks poses).
+const AUTO_MAP: i32 = 1;
 const NAME_FILE: &str = "client_name";
 const TARGET_FILE: &str = "last_target";
 
@@ -80,7 +83,8 @@ struct Glue {
     last_render: Option<Instant>,
     /// Something the map shows changed since the last draw.
     scene_dirty: bool,
-    was_visible: bool,
+    /// The pane drawn on the last render pass, `None` when no map is showing.
+    shown_pane: Option<i32>,
     bounds: [f64; 4],
     /// Manual page inputs; copied into `control` by `sync_manual`.
     manual: Manual,
@@ -91,6 +95,20 @@ struct Glue {
     manual_message: String,
     /// Last preset list given to the window, to avoid rebuilding the model every tick.
     presets_shown: Vec<(String, bool)>,
+    /// Requests sent from the auto page whose RESULT we show: `(req, label, sent)`.
+    auto_reqs: Vec<(u32, String, Instant)>,
+    /// When the 忘れさせる button was last pressed down.
+    forget_pressed_at: Option<Instant>,
+    /// The bottom line of the auto page and whether it is good news.
+    auto_message: (String, bool),
+    /// A picked pose awaiting 決定: `(x, y, yaw)`.
+    pending_pose: Option<(f64, f64, f64)>,
+    /// The task last seen running, to name its TASK_DONE.
+    last_task: Option<(u8, [i32; 4])>,
+    /// How many TASK_DONE have been shown.
+    done_seen: u64,
+    /// Last lists given to the window: blocks, cells, paths.
+    auto_shown: (Vec<i32>, Vec<i32>, Vec<String>),
 }
 
 impl Glue {
@@ -144,17 +162,20 @@ impl Glue {
         scene
     }
 
-    /// Redraws the visible map panes when something changed, at most at 20 Hz.
+    /// Redraws the map that is showing (output page: pane 0, auto page: pane 1) when something
+    /// changed, at most at 20 Hz.
     fn render_maps(&mut self, events: bool) {
         let Some(w) = self.window.upgrade() else { return };
-        let visible = w.get_connected() && w.get_page() == 0;
-        if visible && !self.was_visible {
+        let pane_id = match (w.get_connected(), w.get_page()) {
+            (true, 0) => Some(OUTPUT_MAP),
+            (true, 2) => Some(AUTO_MAP),
+            _ => None,
+        };
+        if pane_id != self.shown_pane {
             self.scene_dirty = true;
         }
-        self.was_visible = visible;
-        if !visible {
-            return;
-        }
+        self.shown_pane = pane_id;
+        let Some(pane_id) = pane_id else { return };
         let bounds = map::field_bounds(self.model.field().map(|f| f.bounds));
         if bounds != self.bounds {
             self.bounds = bounds;
@@ -163,24 +184,33 @@ impl Glue {
             }
         }
         self.scene_dirty |= events;
-        let any_dirty = self.scene_dirty || self.maps.values().any(|p| p.dirty);
+        let any_dirty = self.scene_dirty || self.maps.get(&pane_id).is_some_and(|p| p.dirty);
         if !any_dirty || self.last_render.is_some_and(|t| t.elapsed() < MAP_INTERVAL) {
             return;
         }
         let sf = w.window().scale_factor();
-        if let Some(p) = self.maps.get(&OUTPUT_MAP)
+        if let Some(p) = self.maps.get(&pane_id)
             && p.size.0 > 0
             && p.size.1 > 0
         {
             let buf = map::render(&p.view, p.size.0, p.size.1, &self.scene(p));
-            w.set_map_image(slint::Image::from_rgba8_premultiplied(buf));
-            w.set_map_cx(p.view.center.0);
-            w.set_map_cy(p.view.center.1);
-            w.set_map_scale(p.view.scale / sf);
+            let image = slint::Image::from_rgba8_premultiplied(buf);
+            let (cx, cy, scale) = (p.view.center.0, p.view.center.1, p.view.scale / sf);
+            if pane_id == OUTPUT_MAP {
+                w.set_map_image(image);
+                w.set_map_cx(cx);
+                w.set_map_cy(cy);
+                w.set_map_scale(scale);
+            } else {
+                w.set_auto_map_image(image);
+                w.set_auto_map_cx(cx);
+                w.set_auto_map_cy(cy);
+                w.set_auto_map_scale(scale);
+            }
         }
         self.scene_dirty = false;
         self.last_render = Some(Instant::now());
-        for p in self.maps.values_mut() {
+        if let Some(p) = self.maps.get_mut(&pane_id) {
             p.dirty = false;
         }
     }
@@ -397,6 +427,224 @@ impl Glue {
         }
     }
 
+    // ---- auto page ----
+
+    fn link_live(&self) -> bool {
+        self.client.is_some() && matches!(self.model.connection(), ConnState::Connected { .. })
+    }
+
+    /// Why task buttons are unusable, or `None`.
+    fn auto_block_reason(&self) -> Option<String> {
+        if !self.link_live() {
+            return Some("接続が切れています".to_owned());
+        }
+        let s = self.model.state();
+        auto::task_block_reason(s.map(|s| s.mode), s.and_then(|s| s.task.as_ref()))
+    }
+
+    /// Sends a request from the auto page and remembers it to show its RESULT.
+    fn auto_send(&mut self, label: String, build: impl FnOnce(u32) -> Msg) {
+        let Some(c) = &self.client else { return };
+        let req = c.next_req();
+        c.send(build(req));
+        self.auto_reqs.push((req, label, Instant::now()));
+    }
+
+    fn auto_run(&mut self, kind: u8, args: [i32; 4]) {
+        let [gripper, block, column, row] = args;
+        let label = auto::task_label(kind, args);
+        self.auto_send(label, |req| Msg::RunTask { req, kind, gripper, block, column, row });
+    }
+
+    fn auto_pick(&mut self, gripper: i32, block: i32) {
+        let Some(b) = u8::try_from(block).ok() else { return };
+        let mem = self.model.task_memory().cloned().unwrap_or_default();
+        let count = self.model.config().map_or(auto::DEFAULT_BLOCKS, |c| c.blocks);
+        if self.auto_block_reason().is_some() || b >= count || !auto::can_pick(&mem, b) || !(0..=1).contains(&gripper) {
+            return;
+        }
+        self.auto_run(auto::TaskKind::Pick as u8, [gripper, block, 0, 0]);
+    }
+
+    fn auto_place(&mut self, gripper: i32, column: i32, row: i32) {
+        let mem = self.model.task_memory().cloned().unwrap_or_default();
+        let (cols, rows) = self.model.config().map_or((auto::DEFAULT_COLUMNS, auto::DEFAULT_ROWS), |c| (c.columns, c.rows));
+        let holds = u8::try_from(gripper).ok().is_some_and(|g| auto::holding_gripper(&mem).contains(&g));
+        if self.auto_block_reason().is_some()
+            || !holds
+            || !(0..i32::from(cols)).contains(&column)
+            || !(0..i32::from(rows)).contains(&row)
+        {
+            return;
+        }
+        self.auto_run(auto::TaskKind::Place as u8, [gripper, 0, column, row]);
+    }
+
+    fn auto_move(&mut self, kind: i32) {
+        use auto::TaskKind::*;
+        let ok = [ToSlalomEntrance, ToStart, SlalomForward, SlalomBackward, ToSlalomExit].iter().any(|&k| i32::from(k as u8) == kind);
+        if !ok || self.auto_block_reason().is_some() {
+            return;
+        }
+        self.auto_run(kind as u8, [0; 4]);
+    }
+
+    fn auto_cancel(&mut self) {
+        if self.link_live() {
+            self.auto_send("取り消し".to_owned(), |req| Msg::Cancel { req });
+        }
+    }
+
+    fn auto_start_path(&mut self, name: &str) {
+        if self.auto_block_reason().is_some() || !self.model.config().is_some_and(|c| c.paths.iter().any(|p| p == name)) {
+            return;
+        }
+        let name = name.to_owned();
+        self.auto_send(format!("経路 {name}"), |req| Msg::StartPath { req, name });
+    }
+
+    fn auto_toggle_tracker(&mut self) {
+        if !self.link_live() {
+            return;
+        }
+        let on = !self.model.state().is_some_and(|s| s.tracker_enabled);
+        self.auto_send(if on { "追従 入".to_owned() } else { "追従 切".to_owned() }, |req| Msg::SetTracker { req, on });
+    }
+
+    fn auto_forget_pressed(&mut self) {
+        self.forget_pressed_at = Some(Instant::now());
+    }
+
+    fn auto_forget(&mut self) {
+        let pressed = self.forget_pressed_at.take();
+        if !pressed.is_some_and(|t| t.elapsed() <= Duration::from_millis(manual::RESET_CONFIRM_WINDOW_MS)) {
+            return;
+        }
+        if self.auto_block_reason().is_some() {
+            return;
+        }
+        self.auto_send("忘れさせる".to_owned(), |req| Msg::TaskReset { req });
+    }
+
+    fn auto_pose_dragging(&mut self, x: f32, y: f32, yaw: f32) {
+        self.pending_pose = None;
+        let p = self.pane(AUTO_MAP);
+        p.pose_drag = Some(([f64::from(x), f64::from(y)], f64::from(yaw)));
+        p.dirty = true;
+    }
+
+    fn auto_pose_picked(&mut self, x: f32, y: f32, yaw: f32) {
+        self.auto_pose_dragging(x, y, yaw);
+        self.pending_pose = Some((f64::from(x), f64::from(y), f64::from(yaw)));
+    }
+
+    fn auto_pose_clear(&mut self) {
+        self.pending_pose = None;
+        let p = self.pane(AUTO_MAP);
+        p.pose_drag = None;
+        p.dirty = true;
+    }
+
+    fn auto_pose_confirm(&mut self) {
+        if let Some((x, y, yaw)) = self.pending_pose
+            && self.link_live()
+        {
+            self.auto_send("自己位置".to_owned(), |req| Msg::SetPose { req, x, y, yaw });
+        }
+        self.auto_pose_clear();
+    }
+
+    /// Shows RESULTs of auto-page requests and TASK_DONE on the bottom line.
+    fn collect_auto_results(&mut self) {
+        let results = &self.model.results;
+        let message = &mut self.auto_message;
+        let keep = Duration::from_millis(manual::REQ_KEEP_MS);
+        self.auto_reqs.retain(|(req, label, sent)| {
+            let Some((_, ok, msg)) = results.iter().find(|r| r.0 == *req) else { return sent.elapsed() < keep };
+            *message = if *ok {
+                (if msg.is_empty() { format!("{label}: 受け付けました") } else { format!("{label}: {msg}") }, true)
+            } else {
+                (auto::done_text(label, false, msg), false)
+            };
+            false
+        });
+        if let Some(t) = self.model.state().and_then(|s| s.task.as_ref()) {
+            self.last_task = Some((t.kind, t.args));
+        }
+        let (count, done) = self.model.task_done();
+        if count != self.done_seen {
+            self.done_seen = count;
+            if let Some((kind, ok, msg)) = done {
+                let label = match self.last_task {
+                    Some((k, args)) if k == *kind => auto::task_label(k, args),
+                    _ => auto::task_label(*kind, [0; 4]),
+                };
+                self.auto_message = (auto::done_text(&label, *ok, msg), *ok);
+                self.last_task = None;
+            }
+        }
+    }
+
+    fn refresh_auto(&mut self, w: &MainWindow) {
+        let state = self.model.state();
+        let mem = self.model.task_memory().cloned().unwrap_or_default();
+        let (blocks, cols, rows, paths) = match self.model.config() {
+            Some(c) => (c.blocks, c.columns, c.rows, c.paths.clone()),
+            None => (auto::DEFAULT_BLOCKS, auto::DEFAULT_COLUMNS, auto::DEFAULT_ROWS, Vec::new()),
+        };
+        let reason = self.auto_block_reason();
+        let task = state.and_then(|s| s.task.as_ref());
+        w.set_auto_block_reason(reason.clone().unwrap_or_default().into());
+        w.set_auto_task_active(task.is_some());
+        w.set_auto_task_label(task.map_or(String::new(), |t| auto::task_label(t.kind, t.args)).into());
+        w.set_auto_task_step(task.map_or("", |t| t.step.as_str()).into());
+        w.set_auto_columns(i32::from(cols));
+        w.set_auto_rows(i32::from(rows));
+        w.set_auto_hold_left(mem.holding[0]);
+        w.set_auto_hold_right(mem.holding[1]);
+        if let Some(g) = auto::place_gripper(&mem, w.get_auto_place_gripper().clamp(0, 1) as u8)
+            && i32::from(g) != w.get_auto_place_gripper()
+        {
+            w.set_auto_place_gripper(i32::from(g));
+        }
+        let (col, row) = (w.get_auto_column(), w.get_auto_row());
+        let warning = match (u8::try_from(col), u8::try_from(row)) {
+            (Ok(c), Ok(r)) => auto::place_warning(&mem, c, r),
+            _ => None,
+        };
+        w.set_auto_place_warning(warning.unwrap_or_default().into());
+        w.set_auto_memory_text(auto::memory_text(&mem).into());
+        w.set_auto_forget_enabled(reason.is_none());
+        w.set_auto_active_path(state.and_then(|s| s.path.as_ref()).map_or("", |(n, _)| n.as_str()).into());
+        w.set_auto_tracker(state.is_some_and(|s| s.tracker_enabled));
+        w.set_auto_message(self.auto_message.0.as_str().into());
+        w.set_auto_message_ok(self.auto_message.1);
+        w.set_auto_confirm_active(self.pending_pose.is_some());
+        if let Some((x, y, yaw)) = self.pending_pose {
+            w.set_auto_confirm_text(auto::pose_text(x, y, yaw).into());
+        }
+        let block_states: Vec<i32> = (0..blocks).map(|b| i32::from(!auto::can_pick(&mem, b))).collect();
+        let mut cells = vec![0; usize::from(cols) * usize::from(rows)];
+        for &(c, r) in &mem.placed {
+            if let Some(i) = usize::from(r).checked_mul(usize::from(cols)).map(|v| v + usize::from(c)).filter(|_| c < cols && r < rows) {
+                cells[i] = 1;
+            }
+        }
+        if block_states != self.auto_shown.0 {
+            w.set_auto_blocks(ModelRc::from(Rc::new(VecModel::from(block_states.clone()))));
+            self.auto_shown.0 = block_states;
+        }
+        if cells != self.auto_shown.1 {
+            w.set_auto_cells(ModelRc::from(Rc::new(VecModel::from(cells.clone()))));
+            self.auto_shown.1 = cells;
+        }
+        if paths != self.auto_shown.2 {
+            let items: Vec<SharedString> = paths.iter().map(|p| p.as_str().into()).collect();
+            w.set_auto_paths(ModelRc::from(Rc::new(VecModel::from(items))));
+            self.auto_shown.2 = paths;
+        }
+    }
+
     fn push_control(&self) {
         if let Some(c) = &self.client {
             c.set_control(self.control);
@@ -422,6 +670,12 @@ impl Glue {
         self.manual.release_all();
         self.manual_reqs.clear();
         self.manual_message.clear();
+        self.auto_reqs.clear();
+        self.auto_message = (String::new(), true);
+        self.pending_pose = None;
+        self.pane(AUTO_MAP).pose_drag = None;
+        self.last_task = None;
+        self.done_seen = 0;
         let (client, rx) = Client::start(addr, self.name.clone(), takeover);
         self.client = Some(client);
         self.push_control();
@@ -485,6 +739,7 @@ impl Glue {
             }
         }
         self.collect_manual_results();
+        self.collect_auto_results();
         self.sync_manual();
         self.refresh();
         if let Some(w) = self.window.upgrade()
@@ -492,6 +747,12 @@ impl Glue {
             && w.get_page() == 1
         {
             self.refresh_manual(&w);
+        }
+        if let Some(w) = self.window.upgrade()
+            && w.get_connected()
+            && w.get_page() == 2
+        {
+            self.refresh_auto(&w);
         }
         self.render_maps(got_events);
     }
@@ -572,13 +833,20 @@ pub fn start(window: &MainWindow) -> Rc<RefCell<GlueHandle>> {
         maps: HashMap::new(),
         last_render: None,
         scene_dirty: true,
-        was_visible: false,
+        shown_pane: None,
         bounds: map::field_bounds(None),
         manual: Manual::default(),
         manual_reqs: Vec::new(),
         reset_pressed_at: None,
         manual_message: String::new(),
         presets_shown: Vec::new(),
+        auto_reqs: Vec::new(),
+        forget_pressed_at: None,
+        auto_message: (String::new(), true),
+        pending_pose: None,
+        last_task: None,
+        done_seen: 0,
+        auto_shown: (Vec::new(), Vec::new(), Vec::new()),
     }));
     {
         let g = glue.clone();
@@ -631,6 +899,54 @@ pub fn start(window: &MainWindow) -> Rc<RefCell<GlueHandle>> {
         window.on_manual_reset(move || g.borrow_mut().manual_reset());
         let g = glue.clone();
         window.on_manual_cancel_auto(move || g.borrow_mut().manual_cancel());
+        let g = glue.clone();
+        window.on_auto_run_pick(move |gr, b| g.borrow_mut().auto_pick(gr, b));
+        let g = glue.clone();
+        window.on_auto_run_place(move |gr, c, r| g.borrow_mut().auto_place(gr, c, r));
+        let g = glue.clone();
+        window.on_auto_run_move(move |k| g.borrow_mut().auto_move(k));
+        let g = glue.clone();
+        window.on_auto_cancel(move || g.borrow_mut().auto_cancel());
+        let g = glue.clone();
+        window.on_auto_forget_pressed(move || g.borrow_mut().auto_forget_pressed());
+        let g = glue.clone();
+        window.on_auto_forget(move || g.borrow_mut().auto_forget());
+        let g = glue.clone();
+        window.on_auto_start_path(move |n| g.borrow_mut().auto_start_path(&n));
+        let g = glue.clone();
+        window.on_auto_stop_path(move || g.borrow_mut().auto_cancel());
+        let g = glue.clone();
+        window.on_auto_toggle_tracker(move || g.borrow_mut().auto_toggle_tracker());
+        let g = glue.clone();
+        window.on_auto_pose_dragging(move |x, y, yaw| {
+            let mut g = g.borrow_mut();
+            g.auto_pose_dragging(x, y, yaw);
+            g.render_maps(false);
+        });
+        let g = glue.clone();
+        window.on_auto_pose_picked(move |x, y, yaw| {
+            let mut g = g.borrow_mut();
+            g.auto_pose_picked(x, y, yaw);
+            g.render_maps(false);
+        });
+        let g = glue.clone();
+        window.on_auto_pose_cancelled(move || {
+            let mut g = g.borrow_mut();
+            g.auto_pose_clear();
+            g.render_maps(false);
+        });
+        let g = glue.clone();
+        window.on_auto_pose_dismiss(move || {
+            let mut g = g.borrow_mut();
+            g.auto_pose_clear();
+            g.render_maps(false);
+        });
+        let g = glue.clone();
+        window.on_auto_pose_confirm(move || {
+            let mut g = g.borrow_mut();
+            g.auto_pose_confirm();
+            g.render_maps(false);
+        });
         let g = glue.clone();
         window.on_stop_pressed(move || {
             let mut g = g.borrow_mut();

@@ -3,7 +3,7 @@ import { Theme } from "theme.slint";
 export struct PresetInfo { name: string, enabled: bool }
 
 // A plain button; `active` shows a latched state.
-component Btn inherits Rectangle {
+export component Btn inherits Rectangle {
     in property <string> label;
     in property <bool> active: false;
     in property <bool> enabled: true;

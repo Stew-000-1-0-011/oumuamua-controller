@@ -4,11 +4,9 @@ import { Strip } from "strip.slint";
 import { ConnectScreen, Beacon } from "connect.slint";
 import { OutputPage, WheelInfo } from "output.slint";
 import { ManualPage, PresetInfo } from "manual.slint";
+import { AutoPage } from "auto.slint";
 
 export { Beacon, WheelInfo, PresetInfo }
-
-// Placeholder pages; Tasks 14-16 replace the bodies.
-component AutoPage inherits Rectangle { background: Theme.bg; Text { text: "自動"; color: Theme.dim; } }
 
 // Properties are set by glue.rs; later tasks add more but keep these stable.
 export component MainWindow inherits Window {
@@ -64,7 +62,52 @@ export component MainWindow inherits Window {
     in property <string> manual-speed-text;
     in property <string> manual-auto-label;
 
+    // Auto page. Selections live here so they survive page switches.
+    in-out property <int> auto-pick-gripper: 0;
+    in-out property <int> auto-place-gripper: 0;
+    in-out property <int> auto-block: -1;
+    in-out property <int> auto-column: -1;
+    in-out property <int> auto-row: -1;
+    in property <string> auto-block-reason;
+    in property <bool> auto-task-active: false;
+    in property <string> auto-task-label;
+    in property <string> auto-task-step;
+    in property <[int]> auto-blocks;
+    in property <[int]> auto-cells;
+    in property <int> auto-columns: 3;
+    in property <int> auto-rows: 3;
+    in property <bool> auto-hold-left: false;
+    in property <bool> auto-hold-right: false;
+    in property <string> auto-place-warning;
+    in property <string> auto-memory-text;
+    in property <bool> auto-forget-enabled: true;
+    in property <[string]> auto-paths;
+    in property <string> auto-active-path;
+    in property <bool> auto-tracker: false;
+    in property <string> auto-message;
+    in property <bool> auto-message-ok: true;
+    in property <image> auto-map-image;
+    in property <float> auto-map-cx;
+    in property <float> auto-map-cy;
+    in property <float> auto-map-scale: 50;
+    in property <string> auto-confirm-text;
+    in property <bool> auto-confirm-active: false;
+
     callback connect(string, bool);
+    callback auto-run-pick(int, int);
+    callback auto-run-place(int, int, int);
+    callback auto-run-move(int);
+    callback auto-cancel();
+    callback auto-forget-pressed();
+    callback auto-forget();
+    callback auto-start-path(string);
+    callback auto-stop-path();
+    callback auto-toggle-tracker();
+    callback auto-pose-dragging(float, float, float);
+    callback auto-pose-picked(float, float, float);
+    callback auto-pose-cancelled();
+    callback auto-pose-confirm();
+    callback auto-pose-dismiss();
     callback manual-stick(float, float);
     callback manual-slider(float);
     callback manual-jog(int, int);
@@ -147,7 +190,55 @@ export component MainWindow inherits Window {
                     changed field-frame => { root.manual-options-changed(); }
                     changed both => { root.manual-options-changed(); }
                 }
-                if root.page == 2: AutoPage { }
+                if root.page == 2: AutoPage {
+                    pick-gripper <=> root.auto-pick-gripper;
+                    place-gripper <=> root.auto-place-gripper;
+                    sel-block <=> root.auto-block;
+                    sel-column <=> root.auto-column;
+                    sel-row <=> root.auto-row;
+                    block-reason: root.auto-block-reason;
+                    task-active: root.auto-task-active;
+                    task-label: root.auto-task-label;
+                    task-step: root.auto-task-step;
+                    blocks: root.auto-blocks;
+                    cells: root.auto-cells;
+                    columns: root.auto-columns;
+                    rows: root.auto-rows;
+                    hold-left: root.auto-hold-left;
+                    hold-right: root.auto-hold-right;
+                    place-warning: root.auto-place-warning;
+                    memory-text: root.auto-memory-text;
+                    forget-enabled: root.auto-forget-enabled;
+                    paths: root.auto-paths;
+                    active-path: root.auto-active-path;
+                    tracker: root.auto-tracker;
+                    message: root.auto-message;
+                    message-ok: root.auto-message-ok;
+                    map-image: root.auto-map-image;
+                    map-cx: root.auto-map-cx;
+                    map-cy: root.auto-map-cy;
+                    map-scale: root.auto-map-scale;
+                    confirm-text: root.auto-confirm-text;
+                    confirm-active: root.auto-confirm-active;
+                    run-pick(g, b) => { root.auto-run-pick(g, b); }
+                    run-place(g, c, r) => { root.auto-run-place(g, c, r); }
+                    run-move(k) => { root.auto-run-move(k); }
+                    cancel => { root.auto-cancel(); }
+                    forget-pressed => { root.auto-forget-pressed(); }
+                    forget-confirmed => { root.auto-forget(); }
+                    start-path(n) => { root.auto-start-path(n); }
+                    stop-path => { root.auto-stop-path(); }
+                    toggle-tracker => { root.auto-toggle-tracker(); }
+                    map-geometry(w, h) => { root.map-geometry(1, w, h); }
+                    map-panned(dx, dy) => { root.map-panned(1, dx, dy); }
+                    map-zoomed(f, x, y) => { root.map-zoomed(1, f, x, y); }
+                    map-fit => { root.map-fit(1); }
+                    pose-dragging(x, y, yaw) => { root.auto-pose-dragging(x, y, yaw); }
+                    pose-picked(x, y, yaw) => { root.auto-pose-picked(x, y, yaw); }
+                    pose-cancelled => { root.auto-pose-cancelled(); }
+                    pose-confirm => { root.auto-pose-confirm(); }
+                    pose-dismiss => { root.auto-pose-dismiss(); }
+                }
                 if root.notice != "": Rectangle {
                     y: parent.height - self.height;
                     height: 40px;

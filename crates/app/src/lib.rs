@@ -1,3 +1,4 @@
+pub mod auto;
 pub mod font;
 pub mod glue;
 pub mod manual;
