@@ -72,6 +72,8 @@ struct Glue {
     client: Option<Client>,
     /// The in-app demo robot, alive only while we are connected to it.
     demo: DemoSlot<demo::DemoRobot>,
+    /// Address of the robot the console state belongs to.
+    link_addr: Option<SocketAddr>,
     rx: Option<Receiver<LinkEvent>>,
     _discovery: Option<Discovery>,
     beacons_rx: Option<link::discovery::Beacons>,
@@ -1052,19 +1054,15 @@ impl Glue {
         self.rx = None;
         end_session(&mut self.model, &mut self.demo, &mut self.latch);
         self.control = ControlInput { estop: self.latch.estop(), ..ControlInput::default() };
-        self.manual.release_all();
+        self.reset_session_state(true);
+        self.link_addr = None;
         self.notice.clear();
         self.status.clear();
     }
 
-    fn connect_addr(&mut self, addr: SocketAddr, takeover: bool) {
-        // Drop the old client first: its thread uses the same session socket space.
-        self.client = None;
-        self.model.begin_connect();
-        self.notice.clear();
-        self.latch.on_link_reset();
-        // The emergency-stop latch survives reconnects; motion inputs restart from zero.
-        self.control = ControlInput { estop: self.latch.estop(), ..ControlInput::default() };
+    /// Forget what the previous link left on the phone side. `new_robot` also clears the console
+    /// (log tab, shell tabs, pending shell requests); a reconnect to the same robot keeps them.
+    fn reset_session_state(&mut self, new_robot: bool) {
         self.manual.release_all();
         self.manual_reqs.clear();
         self.manual_message.clear();
@@ -1076,6 +1074,27 @@ impl Glue {
         self.start_pending = None;
         self.last_sent_task = None;
         self.done_seen = 0;
+        if new_robot {
+            self.console.reset_session();
+            self.shell_reqs.clear();
+            self.sync_deadline = None;
+            self.console_tabs_shown.clear();
+            self.console_cands_shown.clear();
+            self.console_rev = None;
+        }
+    }
+
+    fn connect_addr(&mut self, addr: SocketAddr, takeover: bool) {
+        // Drop the old client first: its thread uses the same session socket space.
+        self.client = None;
+        self.model.begin_connect();
+        self.notice.clear();
+        self.latch.on_link_reset();
+        // The emergency-stop latch survives reconnects; motion inputs restart from zero.
+        self.control = ControlInput { estop: self.latch.estop(), ..ControlInput::default() };
+        let new_robot = self.link_addr != Some(addr);
+        self.reset_session_state(new_robot);
+        self.link_addr = Some(addr);
         let (client, rx) = Client::start(addr, self.name.clone(), takeover);
         self.client = Some(client);
         self.push_control();
@@ -1224,6 +1243,7 @@ pub fn start(window: &MainWindow) -> Rc<RefCell<GlueHandle>> {
         model: AppModel::new(),
         client: None,
         demo: DemoSlot::default(),
+        link_addr: None,
         rx: None,
         _discovery: discovery,
         beacons_rx,

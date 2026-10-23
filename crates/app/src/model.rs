@@ -116,6 +116,7 @@ impl<T> Default for DemoSlot<T> {
 impl<T> DemoSlot<T> {
     /// The demo robot started; any earlier one is dropped (stopped) first.
     pub fn start(&mut self, robot: T) {
+        // None first: the old robot must stop before the new one is stored.
         self.robot = None;
         self.robot = Some(robot);
     }
@@ -501,9 +502,10 @@ mod tests {
         model.apply(LinkEvent::Connected { robot_name: "demo".into() });
         demo.start(1);
         latch.press();
+        latch.release_sent(5); // a RELEASE_STOP in flight when the user leaves
         end_session(&mut model, &mut demo, &mut latch);
         assert!(!demo.active());
         assert_eq!(model.connection(), ConnState::Searching);
-        assert!(latch.estop());
+        assert!(latch.estop() && latch.pending().is_none());
     }
 }

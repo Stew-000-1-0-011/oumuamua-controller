@@ -442,6 +442,23 @@ impl Console {
         self.active = self.find(&keep).unwrap_or(0);
     }
 
+    /// The robot (or demo) changed: forget what the old one showed. The rosout log and the shell
+    /// tabs are cleared; histories (closed tabs go to the stash), quick commands and the log
+    /// level are kept.
+    pub fn reset_session(&mut self) {
+        while self.tabs.len() > 1 {
+            let t = self.tabs.pop().expect("len > 1");
+            self.stash.insert(t.name, t.history);
+        }
+        self.tabs[0].scroll = Scrollback::new(SCROLLBACK_LINES);
+        self.tabs[0].cands.clear();
+        self.tabs[0].pending_complete = false;
+        self.active = 0;
+        self.prompt = None;
+        self.touch(0);
+        self.dirty = true;
+    }
+
     // ---- keys ----
 
     pub fn mod_state(&self, m: Modifier) -> ModState {
@@ -865,6 +882,26 @@ mod tests {
         typed(&mut c, "x"); // the line moved on before the answer came
         c.on_event(ShellEvent::Completion { req: 1, tab: "a".into(), start: 0, candidates: vec!["echo".into()] });
         assert_eq!(c.input_display().0, "echx");
+    }
+
+    #[test]
+    fn reset_session_clears_log_and_tabs_but_keeps_histories_and_quick() {
+        let mut c = console_with_tab("t1");
+        typed(&mut c, "ls");
+        c.key("Enter");
+        c.on_event(ShellEvent::Log { stamp_ms: 1000, level: 20, name: "demo".into(), text: "hello".into() });
+        c.set_quick_commands(vec!["pwd".into()]);
+        c.set_active(0);
+        assert!(texts(&c).iter().any(|t| t.contains("hello")));
+        c.reset_session();
+        assert_eq!(c.tabs(), vec!["rosout".to_owned()]);
+        assert!(!texts(&c).iter().any(|t| t.contains("hello")));
+        assert_eq!(c.quick_commands(), ["pwd".to_owned()]);
+        // The tab's history comes back when the name is opened again.
+        c.new_tab("t1");
+        typed(&mut c, "");
+        c.key("Up");
+        assert!(c.input_display().0.contains("ls"));
     }
 
     #[test]

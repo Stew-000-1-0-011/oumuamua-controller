@@ -26,6 +26,7 @@ export component MainWindow inherits Window {
     callback connect-demo();
     callback disconnect();
     property <bool> confirm-leave: false;
+    changed connected => { if !root.connected { root.confirm-leave = false; } }
     // Strip: link status text/colour, rtt in ms (-1 unknown), stop latch ("解除" shown).
     in property <string> conn-text: "未接続";
     in property <color> conn-color: Theme.dim;
