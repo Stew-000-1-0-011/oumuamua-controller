@@ -11,6 +11,7 @@ slint = { version = "=1.18.1", default-features = false, features = ["std", "com
 proto = { path = "../proto" }
 link = { path = "../link" }
 term = { path = "../term" }
+demo = { path = "../demo" }
 tiny-skia = { version = "0.12", default-features = false, features = ["std", "simd"] }
 
 [target.'cfg(not(target_os = "android"))'.dependencies]

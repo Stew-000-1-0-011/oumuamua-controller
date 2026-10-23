@@ -32,6 +32,8 @@ export component Strip inherits Rectangle {
     in property <bool> stopped;
     // Robot mode text ("手動" / "自動" / "停止"), empty when unknown.
     in property <string> mode-text;
+    // Connected to the in-app demo robot, not a real one.
+    in property <bool> demo;
     callback stop-pressed();
     callback release-pressed();
 
@@ -45,6 +47,12 @@ export component Strip inherits Rectangle {
         Rectangle {
             VerticalLayout {
                 alignment: center;
+                if root.demo: Rectangle {
+                    height: 28px;
+                    background: Theme.demo;
+                    border-radius: 6px;
+                    Text { text: "デモ"; color: #000000; font-size: 16px; font-weight: 700; horizontal-alignment: center; vertical-alignment: center; }
+                }
                 spacing: 2px;
                 Text {
                     text: root.conn-text;

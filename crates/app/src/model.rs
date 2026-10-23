@@ -100,6 +100,37 @@ impl StopLatch {
 
 pub const RESULTS_KEPT: usize = 20;
 
+/// Holds the in-app demo robot (any guard that stops on drop) while the app is connected to
+/// it. The "is demo" decision for the screen lives here, not in the UI.
+#[derive(Debug)]
+pub struct DemoSlot<T> {
+    robot: Option<T>,
+}
+
+impl<T> Default for DemoSlot<T> {
+    fn default() -> Self {
+        DemoSlot { robot: None }
+    }
+}
+
+impl<T> DemoSlot<T> {
+    /// The demo robot started; any earlier one is dropped (stopped) first.
+    pub fn start(&mut self, robot: T) {
+        self.robot = None;
+        self.robot = Some(robot);
+    }
+
+    /// Stops the demo robot, if any (connecting elsewhere, link ended, app exit).
+    pub fn release(&mut self) {
+        self.robot = None;
+    }
+
+    /// True while the demo robot exists: the demo indicator is on.
+    pub fn active(&self) -> bool {
+        self.robot.is_some()
+    }
+}
+
 #[derive(Debug)]
 pub struct AppModel {
     conn: ConnState,
@@ -423,5 +454,33 @@ mod tests {
         assert_eq!((n, d.cloned()), (1, Some((2, false, "blocked".to_owned()))));
         m.begin_connect();
         assert_eq!(m.task_done().0, 0);
+    }
+
+    #[test]
+    fn demo_slot_indicator_and_drop() {
+        use std::cell::Cell;
+        use std::rc::Rc;
+        struct Guard(Rc<Cell<u32>>);
+        impl Drop for Guard {
+            fn drop(&mut self) {
+                self.0.set(self.0.get() + 1);
+            }
+        }
+        let stopped = Rc::new(Cell::new(0));
+        let mut slot: DemoSlot<Guard> = DemoSlot::default();
+        assert!(!slot.active());
+        slot.start(Guard(stopped.clone()));
+        assert!(slot.active() && stopped.get() == 0);
+        // Switching to a real target releases it: indicator off, robot dropped.
+        slot.release();
+        assert!(!slot.active() && stopped.get() == 1);
+        slot.release();
+        assert_eq!(stopped.get(), 1);
+        // Pressing デモ twice stops the first.
+        slot.start(Guard(stopped.clone()));
+        slot.start(Guard(stopped.clone()));
+        assert_eq!(stopped.get(), 2);
+        drop(slot); // app exit
+        assert_eq!(stopped.get(), 3);
     }
 }

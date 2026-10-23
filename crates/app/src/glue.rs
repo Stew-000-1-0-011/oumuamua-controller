@@ -3,7 +3,7 @@
 use crate::auto;
 use crate::console::{self, Console, PromptKind};
 use crate::manual::{self, Manual};
-use crate::model::{AppModel, ConnState, StopLatch};
+use crate::model::{AppModel, ConnState, DemoSlot, StopLatch};
 use crate::map::{self, PaneState, Scene};
 use crate::{Beacon, ConsoleRow, ConsoleSpan, ConsoleState, ConsoleTabInfo, MainWindow, PresetInfo, WheelInfo, storage};
 use link::{Client, ControlInput, Discovery, LinkEvent};
@@ -70,6 +70,8 @@ struct Glue {
     window: slint::Weak<MainWindow>,
     model: AppModel,
     client: Option<Client>,
+    /// The in-app demo robot, alive only while we are connected to it.
+    demo: DemoSlot<demo::DemoRobot>,
     rx: Option<Receiver<LinkEvent>>,
     _discovery: Option<Discovery>,
     beacons_rx: Option<link::discovery::Beacons>,
@@ -1022,6 +1024,29 @@ impl Glue {
             }
         };
         storage::save(TARGET_FILE, target.trim());
+        // A real robot: the demo robot (if any) stops.
+        self.client = None;
+        self.demo.release();
+        self.connect_addr(addr, takeover);
+    }
+
+    /// The デモ button: start the in-app robot and connect to it like any other (no takeover,
+    /// not remembered as the last target).
+    fn connect_demo(&mut self) {
+        self.client = None;
+        self.demo.release();
+        match demo::DemoRobot::start() {
+            Ok(robot) => {
+                let addr = robot.addr();
+                self.demo.start(robot);
+                self.connect_addr(addr, false);
+                self.status = "デモに接続中…".to_owned();
+            }
+            Err(e) => self.status = format!("デモを始められません: {e}"),
+        }
+    }
+
+    fn connect_addr(&mut self, addr: SocketAddr, takeover: bool) {
         // Drop the old client first: its thread uses the same session socket space.
         self.client = None;
         self.model.begin_connect();
@@ -1084,6 +1109,7 @@ impl Glue {
                 // The client thread idles after these; release it so Connect starts a fresh one.
                 self.client = None;
                 self.rx = None;
+                self.demo.release();
                 self.latch.on_link_reset();
                 self.control.estop = self.latch.estop();
             }
@@ -1139,6 +1165,7 @@ impl Glue {
             Mode::Stopped => 2,
         });
         w.set_connected(connected);
+        w.set_demo(connected && self.demo.active());
         w.set_conn_text(text.into());
         w.set_conn_color(color);
         w.set_rtt_ms(rtt);
@@ -1185,6 +1212,7 @@ pub fn start(window: &MainWindow) -> Rc<RefCell<GlueHandle>> {
         window: window.as_weak(),
         model: AppModel::new(),
         client: None,
+        demo: DemoSlot::default(),
         rx: None,
         _discovery: discovery,
         beacons_rx,
@@ -1237,6 +1265,12 @@ pub fn start(window: &MainWindow) -> Rc<RefCell<GlueHandle>> {
         window.on_connect(move |t, takeover| {
             let mut g = g.borrow_mut();
             g.connect(&t, takeover);
+            g.refresh();
+        });
+        let g = glue.clone();
+        window.on_connect_demo(move || {
+            let mut g = g.borrow_mut();
+            g.connect_demo();
             g.refresh();
         });
         let g = glue.clone();
@@ -1444,8 +1478,10 @@ pub struct GlueHandle {
 impl Drop for GlueHandle {
     /// Histories and quick commands are written on exit too (saving is otherwise debounced).
     fn drop(&mut self) {
-        if let Ok(g) = self._glue.try_borrow() {
+        if let Ok(mut g) = self._glue.try_borrow_mut() {
             g.console.save();
+            g.client = None;
+            g.demo.release();
         }
     }
 }

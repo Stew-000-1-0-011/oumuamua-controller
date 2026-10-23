@@ -21,6 +21,9 @@ export component MainWindow inherits Window {
     in-out property <int> page: 0;
     // False shows the connection screen instead of the pages.
     in property <bool> connected: false;
+    // Connected to the in-app demo robot (badge in the strip and the output band).
+    in property <bool> demo: false;
+    callback connect-demo();
     // Strip: link status text/colour, rtt in ms (-1 unknown), stop latch ("解除" shown).
     in property <string> conn-text: "未接続";
     in property <color> conn-color: Theme.dim;
@@ -156,12 +159,14 @@ export component MainWindow inherits Window {
                 status: root.connect-status;
                 status-color: root.connect-status-color;
                 connect(t, takeover) => { root.connect(t, takeover); }
+                connect-demo => { root.connect-demo(); }
             }
             if root.connected: Rectangle {
                 if root.page == 0: OutputPage {
                     pose-text: root.band-pose;
                     vel-text: root.band-vel;
                     wheels: root.band-wheels;
+                    demo: root.demo;
                     mode-text: root.band-mode;
                     mode-color: root.band-mode-color;
                     reason-text: root.band-reason;
@@ -269,6 +274,7 @@ export component MainWindow inherits Window {
             conn-color: root.conn-color;
             rtt-ms: root.rtt-ms;
             stopped: root.stopped;
+            demo: root.demo;
             mode-text: root.mode == 0 ? "手動" : root.mode == 1 ? "自動" : root.mode == 2 ? "停止" : "";
             stop-pressed => { root.stop-pressed(); }
             release-pressed => { root.release-pressed(); }

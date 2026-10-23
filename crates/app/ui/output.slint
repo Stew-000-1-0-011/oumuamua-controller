@@ -21,6 +21,8 @@ export component OutputPage inherits Rectangle {
     in property <string> mode-text;
     in property <color> mode-color: Theme.dim;
     in property <string> reason-text;
+    // Connected to the in-app demo robot.
+    in property <bool> demo;
     // Window height; the keyboard takes about 40% of it.
     in property <length> window-height: 640px;
 
@@ -48,6 +50,12 @@ export component OutputPage inherits Rectangle {
                     Cell { text: root.pose-text; }
                     Cell { text: root.vel-text; }
                     Rectangle { }
+                    if root.demo: Rectangle {
+                        width: 80px;
+                        background: Theme.demo;
+                        border-radius: 6px;
+                        Text { text: "デモ"; color: #000000; font-size: 16px; font-weight: 700; horizontal-alignment: center; vertical-alignment: center; }
+                    }
                     Cell { text: root.mode-text; color: root.mode-color; font-weight: 700; }
                 }
                 HorizontalLayout {
