@@ -20,7 +20,10 @@ slint::slint! {
         callback slider(float);
         callback jog-pressed(int, int);
         callback jog-released(int);
-        ManualPage {
+        in-out property <bool> both <=> page.both;
+        callback both-changed();
+        page := ManualPage {
+            changed both => { root.both-changed(); }
             stick-moved(x, y) => { root.stick(x, y); }
             slider-moved(s) => { root.slider(s); }
             jog-pressed(side, dir) => { root.jog-pressed(side, dir); }
@@ -100,6 +103,76 @@ fn jog_release_is_per_side() {
     assert_eq!(read(), (1, -1));
     touch(w, 1, 480., 140., Ended);
     assert_eq!(read(), (1, 0), "left keeps jogging");
+    touch(w, 0, 310., 140., Ended);
+    assert_eq!(read(), (0, 0));
+}
+
+/// Runs the pending `changed` handlers, as the event loop does between events.
+fn settle() {
+    slint::platform::update_timers_and_animations();
+}
+
+#[test]
+fn jog_survives_toggling_both_mid_hold() {
+    i_slint_backend_testing::init_no_event_loop();
+    let host = Host::new().unwrap();
+    let manual = Rc::new(RefCell::new(Manual::default()));
+    let m = manual.clone();
+    host.on_jog_pressed(move |side, dir| m.borrow_mut().jog_press(side as u8, dir as i8));
+    let m = manual.clone();
+    host.on_jog_released(move |side| m.borrow_mut().jog_release(side as u8));
+    let m = manual.clone();
+    let h = host.as_weak();
+    host.on_both_changed(move || m.borrow_mut().set_both(h.unwrap().get_both()));
+    host.show().unwrap();
+    let w = host.window();
+    let read = || {
+        let mut c = ControlInput::default();
+        manual.borrow().apply(&mut c, &DEFAULT_LEVELS, true);
+        (c.jog_left, c.jog_right)
+    };
+
+    host.set_both(true);
+    settle();
+    touch(w, 0, 310., 140., Started);
+    assert_eq!(read(), (1, 1));
+    // 両方 turned off while the finger is down (set like the 両方 button does).
+    host.set_both(false);
+    settle();
+    assert_eq!(read(), (0, 0), "toggling 両方 drops held jogs");
+    touch(w, 0, 310., 140., Ended);
+    assert_eq!(read(), (0, 0));
+    // And the other way round.
+    touch(w, 0, 310., 140., Started);
+    assert_eq!(read(), (1, 0));
+    host.set_both(true);
+    settle();
+    touch(w, 0, 310., 140., Ended);
+    assert_eq!(read(), (0, 0), "no side is left jogging");
+}
+
+#[test]
+fn two_fingers_on_one_side_share_it() {
+    i_slint_backend_testing::init_no_event_loop();
+    let host = Host::new().unwrap();
+    let manual = Rc::new(RefCell::new(Manual::default()));
+    let m = manual.clone();
+    host.on_jog_pressed(move |side, dir| m.borrow_mut().jog_press(side as u8, dir as i8));
+    let m = manual.clone();
+    host.on_jog_released(move |side| m.borrow_mut().jog_release(side as u8));
+    host.show().unwrap();
+    let w = host.window();
+    let read = || {
+        let mut c = ControlInput::default();
+        manual.borrow().apply(&mut c, &DEFAULT_LEVELS, true);
+        (c.jog_left, c.jog_right)
+    };
+    // Left 上 and left 下: the later press wins, and lifting either stops that side (intended).
+    touch(w, 0, 310., 140., Started);
+    touch(w, 1, 350., 140., Started);
+    assert_eq!(read(), (-1, 0));
+    touch(w, 1, 350., 140., Ended);
+    assert_eq!(read(), (0, 0));
     touch(w, 0, 310., 140., Ended);
     assert_eq!(read(), (0, 0));
 }

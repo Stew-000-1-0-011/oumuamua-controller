@@ -109,11 +109,13 @@ pub struct Manual {
     stick: (f32, f32),
     slider: f32,
     jog: [i8; 2],
+    /// Per pressing side: the sides that press drove.
+    driven: [[bool; 2]; 2],
 }
 
 impl Default for Manual {
     fn default() -> Self {
-        Manual { level: 0, field_frame: false, both: false, stick: (0.0, 0.0), slider: 0.0, jog: [0, 0] }
+        Manual { level: 0, field_frame: false, both: false, stick: (0.0, 0.0), slider: 0.0, jog: [0, 0], driven: [[false; 2]; 2] }
     }
 }
 
@@ -125,19 +127,35 @@ impl Manual {
         self.slider = s;
     }
     /// Pressing 上/下 on `side` (0 left, 1 right); `dir` is +1 up, -1 down. With 両方 both move.
+    /// The sides this press drove are remembered, so its release stops exactly those, whatever
+    /// 両方 says by then.
     pub fn jog_press(&mut self, side: u8, dir: i8) {
-        if self.both {
-            self.jog = [dir, dir];
-        } else {
-            self.jog[usize::from(side.min(1))] = dir;
+        let side = usize::from(side.min(1));
+        let driven = if self.both { [true, true] } else { [side == 0, side == 1] };
+        for (i, d) in driven.into_iter().enumerate() {
+            if d {
+                self.jog[i] = dir;
+            }
         }
+        self.driven[side] = driven;
     }
-    /// Lifting a finger from `side`'s 上/下 stops only that side; with 両方 both stop.
+    /// Lifting a finger from `side`'s 上/下 stops the sides that press drove. Two fingers on 上
+    /// and 下 of the same side share that side, so lifting either one stops it.
     pub fn jog_release(&mut self, side: u8) {
-        if self.both {
+        let side = usize::from(side.min(1));
+        for (i, d) in self.driven[side].into_iter().enumerate() {
+            if d {
+                self.jog[i] = 0;
+            }
+        }
+        self.driven[side] = [false, false];
+    }
+    /// Changes 両方. Any held jog is dropped, since its press was made under the old meaning.
+    pub fn set_both(&mut self, both: bool) {
+        if self.both != both {
+            self.both = both;
             self.jog = [0, 0];
-        } else {
-            self.jog[usize::from(side.min(1))] = 0;
+            self.driven = [[false; 2]; 2];
         }
     }
     /// Drops every held input (page left, popup shown, link lost).
@@ -145,6 +163,7 @@ impl Manual {
         self.stick = (0.0, 0.0);
         self.slider = 0.0;
         self.jog = [0, 0];
+        self.driven = [[false; 2]; 2];
     }
     pub fn level_pair(&self, levels: &[(f64, f64); 3]) -> (f64, f64) {
         levels[self.level.min(2)]
@@ -309,6 +328,35 @@ mod tests {
         m.both = true;
         m.jog_press(0, 1);
         m.jog_release(1);
+        m.apply(&mut c, &levels, true);
+        assert_eq!((c.jog_left, c.jog_right), (1, 0), "the right press only drove the right side");
+        m.jog_release(0);
+        m.apply(&mut c, &levels, true);
+        assert_eq!((c.jog_left, c.jog_right), (0, 0));
+    }
+
+    #[test]
+    fn jog_release_stops_what_the_press_drove() {
+        let levels = DEFAULT_LEVELS;
+        let mut c = ControlInput::default();
+        // 両方 on, press, 両方 off (field set directly), release.
+        let mut m = Manual { both: true, ..Manual::default() };
+        m.jog_press(0, 1);
+        m.both = false;
+        m.jog_release(0);
+        m.apply(&mut c, &levels, true);
+        assert_eq!((c.jog_left, c.jog_right), (0, 0));
+        // 両方 off, press left, 両方 on, release.
+        let mut m = Manual::default();
+        m.jog_press(0, 1);
+        m.both = true;
+        m.jog_release(0);
+        m.apply(&mut c, &levels, true);
+        assert_eq!((c.jog_left, c.jog_right), (0, 0));
+        // Changing 両方 through set_both drops held jogs.
+        let mut m = Manual { both: true, ..Manual::default() };
+        m.jog_press(0, 1);
+        m.set_both(false);
         m.apply(&mut c, &levels, true);
         assert_eq!((c.jog_left, c.jog_right), (0, 0));
     }

@@ -421,7 +421,7 @@ impl Glue {
         let Some(w) = self.window.upgrade() else { return };
         self.manual.level = w.get_manual_level().clamp(0, 2) as usize;
         self.manual.field_frame = w.get_manual_field_frame();
-        self.manual.both = w.get_manual_both();
+        self.manual.set_both(w.get_manual_both());
         self.sync_manual();
     }
 
