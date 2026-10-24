@@ -1,0 +1,100 @@
+# Builds the Android APK on every push and publishes it as the "apk-latest" pre-release,
+# so a phone can download it from the Releases page.
+#
+# Signing: the secret ANDROID_KEYSTORE_BASE64 (a base64-encoded keystore whose password is
+# "android", the same key the hand-built APKs used) keeps every build an in-place update of
+# the installed app. Without the secret the APK is signed with a throwaway key and only kept
+# as a workflow artifact, because installing it would require uninstalling the app first.
+name: APK
+
+on:
+  push:
+    branches: ["**"]
+    paths:
+      - "crates/**"
+      - "third_party/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - ".github/workflows/apk.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: apk-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+
+env:
+  NDK_VERSION: "29.0.14206865"
+  CARGO_APK_VERSION: "0.10.0"
+
+jobs:
+  apk:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Rust toolchain
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+          rustup target add aarch64-linux-android
+
+      - name: Android NDK
+        run: |
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --install "ndk;$NDK_VERSION" > /dev/null
+          echo "ANDROID_NDK_ROOT=$ANDROID_HOME/ndk/$NDK_VERSION" >> "$GITHUB_ENV"
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-all-crates: "true"
+
+      - name: cargo-apk
+        run: |
+          if ! cargo apk version >/dev/null 2>&1; then
+            cargo install cargo-apk --version "$CARGO_APK_VERSION" --locked
+          fi
+
+      - name: Signing key
+        env:
+          KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+        run: |
+          ks="$RUNNER_TEMP/release.keystore"
+          if [ -n "$KEYSTORE_BASE64" ]; then
+            echo "$KEYSTORE_BASE64" | base64 -d > "$ks"
+            echo "SIGNED=1" >> "$GITHUB_ENV"
+          else
+            echo "::warning::ANDROID_KEYSTORE_BASE64 が未設定です。使い捨ての鍵で署名し、Release には載せません。"
+            keytool -genkeypair -keystore "$ks" -storepass android -keypass android \
+              -alias androiddebugkey -keyalg RSA -keysize 2048 -validity 10000 \
+              -dname "CN=Android Debug,O=Android,C=US" > /dev/null
+            echo "SIGNED=0" >> "$GITHUB_ENV"
+          fi
+          echo "CARGO_APK_RELEASE_KEYSTORE=$ks" >> "$GITHUB_ENV"
+          echo "CARGO_APK_RELEASE_KEYSTORE_PASSWORD=android" >> "$GITHUB_ENV"
+
+      - name: Build
+        run: |
+          cargo apk build -p app --release --lib
+          mkdir -p dist
+          cp target/release/apk/app.apk dist/oumuamua-controller.apk
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: oumuamua-controller-apk
+          path: dist/oumuamua-controller.apk
+          retention-days: 14
+
+      - name: Publish to the apk-latest pre-release
+        if: env.SIGNED == '1'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          short="${GITHUB_SHA::7}"
+          notes="ブランチ ${GITHUB_REF_NAME} のコミット ${short} から自動で作った APK です。"
+          gh release delete apk-latest --cleanup-tag --yes || true
+          gh release create apk-latest dist/oumuamua-controller.apk \
+            --prerelease --target "$GITHUB_SHA" \
+            --title "最新の APK (${GITHUB_REF_NAME} ${short})" --notes "$notes"
