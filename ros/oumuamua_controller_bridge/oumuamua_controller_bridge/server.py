@@ -135,7 +135,7 @@ class BridgeServer:
         self._path_shape: Optional[list] = None
         self._dropped_tabs: set = set()  # shell output was dropped: resync when the link drains
 
-        self.sup = Supervisor(io, lift_max=float(config.get("lift_max", 0.19)))
+        self.sup = Supervisor(io, lift_max=float(config.get("lift_max", 0.85)))
         self.shells = ShellManager(Path(log_root), self._on_shell_output, self._on_shell_closed)
         setup = tuple(config.get("completion_setup_files", ()))
         self.handlers = Handlers(
@@ -244,7 +244,7 @@ class BridgeServer:
             snap = Snapshot()
         burst = [
             [P.CONFIG, self.robot_name, list(self.io.path_names()),
-             [list(p) for p in c.get("lift_presets", [])], float(c.get("lift_max", 0.19)),
+             [list(p) for p in c.get("lift_presets", [])], float(c.get("lift_max", 0.85)),
              [list(s) for s in c.get("speed_levels", [])], int(c.get("blocks", 6)),
              int(c.get("columns", 3)), int(c.get("rows", 3))],
             [P.FIELD, _box(c.get("field_bounds", [0, 0, 0, 0])),

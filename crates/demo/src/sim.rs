@@ -8,7 +8,7 @@ pub const PATHS: [&str; 2] = ["slalom_forward", "slalom_backward"];
 // Field and lift values are config.py DEFAULTS (ros/oumuamua_controller_bridge); a test keeps them equal.
 // The presets above lift_max stay: the phone disables those buttons, as with the real robot.
 pub const LIFT_PRESETS: [(&str, f64); 4] = [("下段", 0.01), ("中段", 0.35), ("上段", 0.69), ("0 点", 0.0)];
-pub const LIFT_MAX: f64 = 0.19;
+pub const LIFT_MAX: f64 = 0.85;
 pub const SPEED_LEVELS: [(f64, f64); 3] = [(0.3, 1.0), (0.8, 1.8), (1.5, 2.5)];
 pub const BLOCKS: u8 = 6;
 pub const COLUMNS: u8 = 3;

@@ -7,7 +7,7 @@ bridge:
     robot_name: "oumuamua"
     lift_preset_names: ["下段", "中段", "上段", "0 点"]
     lift_preset_heights: [0.01, 0.35, 0.69, 0.0]
-    lift_max: 0.19
+    lift_max: 0.85   # gripper.yaml の lift.max_height と合わせる
     speed_levels: [0.3, 1.0, 0.8, 1.8, 1.5, 2.5]   # [v, w] pairs: m/s, rad/s
     blocks: 6
     columns: 3

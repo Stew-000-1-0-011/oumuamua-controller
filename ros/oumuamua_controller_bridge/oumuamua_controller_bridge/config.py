@@ -7,7 +7,7 @@ import os
 DEFAULTS = {
     "robot_name": "oumuamua",
     "lift_presets": [["下段", 0.01], ["中段", 0.35], ["上段", 0.69], ["0 点", 0.0]],
-    "lift_max": 0.19,
+    "lift_max": 0.85,
     "speed_levels": [[0.3, 1.0], [0.8, 1.8], [1.5, 2.5]],
     "blocks": 6, "columns": 3, "rows": 3,
     "field_bounds": [-2.786, -1.655, 2.786, 1.655],
