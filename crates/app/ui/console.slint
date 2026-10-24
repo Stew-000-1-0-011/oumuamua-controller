@@ -34,6 +34,11 @@ export global ConsoleState {
     // Off at first: the map and the console share the screen; キー▲ widens the console over it.
     in-out property <bool> kbd-shown: false;
 
+    // Written by the panel: the scroll offset of the output (<= 0) and whether it follows the
+    // newest line.
+    in-out property <length> view-y: 0px;
+    in-out property <bool> view-stuck: true;
+
     callback key(string);
     callback select-tab(int);
     callback swipe(int);
@@ -128,69 +133,97 @@ component RowView inherits Rectangle {
 
 // The console: tabs, output, candidates, quick commands, input line and keyboard.
 export component ConsolePanel inherits Rectangle {
-    in property <length> kbd-height: 250px;
-    // Short on room above the keyboard: no quick-command row, and no tab row while candidates show.
-    in property <bool> compact: false;
     background: Theme.panel;
     clip: true;
 
     out property <bool> keyboard-visible: ConsoleState.kbd-shown && (ConsoleState.is-shell || ConsoleState.prompt-active);
     property <bool> stick: true;
 
+    // Layout budget with the keyboard up, from the panel's own height: the input line (or the
+    // log-level row) and a minimal output stay; the keyboard comes next at 32px keys (206px);
+    // the optional rows (candidates, tabs, quick commands, in this order) are dropped unless
+    // they fit on top of that. The keyboard never takes more than the panel has left.
+    property <length> row-h: 52px;
+    property <length> input-h: ConsoleState.is-shell ? 44px : 52px;
+    property <length> min-output: 40px;
+    property <length> kbd-min: 206px;
+    property <length> kbd-max: 300px;
+    property <length> room0: root.height - root.input-h - root.min-output - root.kbd-min;
+    property <bool> has-cands: ConsoleState.candidates.length > 0;
+    property <bool> show-cands: !root.keyboard-visible || root.room0 >= root.row-h;
+    property <length> room1: root.room0 - (root.has-cands && root.show-cands ? root.row-h : 0px);
+    property <bool> show-tabs: !root.keyboard-visible || root.room1 >= root.row-h;
+    property <length> room2: root.room1 - (root.show-tabs ? root.row-h : 0px);
+    property <bool> show-quick: !root.keyboard-visible || root.room2 >= root.row-h;
+    property <length> room3: root.room2 - (ConsoleState.is-shell && root.show-quick ? root.row-h : 0px);
+    out property <length> kbd-h: !root.keyboard-visible ? 0px
+        : root.room0 >= 0px ? min(root.kbd-min + root.room3, root.kbd-max)
+        : max(root.height - root.input-h - root.min-output, 0px);
+
     // Nothing below the console takes a touch that lands on its empty parts.
     TouchArea { }
 
     VerticalLayout {
         // Tabs. Swipe left/right on the bar to move between them.
-        if !(root.compact && root.keyboard-visible && ConsoleState.candidates.length > 0): Rectangle {
+        if root.show-tabs: Rectangle {
             height: 52px;
             background: #161b22;
-            HorizontalLayout {
-                padding: 3px;
-                spacing: 4px;
-                for t[i] in ConsoleState.tabs: Chip {
-                    text: t.name;
-                    selected: t.active;
-                    min-width: 72px;
-                    horizontal-stretch: 0;
-                    clicked => { ConsoleState.select-tab(i); }
-                    held => { if i > 0 { menu-tab = i; } }
-                }
-                Chip { text: "＋"; min-width: 48px; horizontal-stretch: 0; clicked => { ConsoleState.new-tab(); } }
-                Rectangle { }
-                Chip {
-                    text: root.keyboard-visible ? "キー▼" : "キー▲";
-                    min-width: 84px;
-                    horizontal-stretch: 0;
-                    clicked => { ConsoleState.kbd-shown = !ConsoleState.kbd-shown; }
-                }
-            }
-        }
-        // Output
-        Rectangle {
-            vertical-stretch: 1;
-            min-height: 40px;
-            background: #0b0e13;
-            init => { ConsoleState.output-width(self.width); }
-            changed width => { ConsoleState.output-width(self.width); }
-            lv := ListView {
-                for r in ConsoleState.rows: RowView {
-                    data: r;
-                    fold(b) => { ConsoleState.fold(b); }
-                }
-                changed content-height => {
-                    if root.stick { self.content-y = min(0px, self.visible-height - self.content-height); }
-                }
-                changed content-y => {
-                    root.stick = self.content-y <= self.visible-height - self.content-height + 6px;
-                }
-            }
+            // Swipe left/right on the bar to move between the tabs.
             swipe := SwipeGestureHandler {
                 handle-swipe-left: true;
                 handle-swipe-right: true;
                 swiped => {
                     if self.current-position.x < self.pressed-position.x { ConsoleState.swipe(1); }
                     else { ConsoleState.swipe(-1); }
+                }
+                HorizontalLayout {
+                    width: parent.width;
+                    height: parent.height;
+                    padding: 3px;
+                    spacing: 4px;
+                    for t[i] in ConsoleState.tabs: Chip {
+                        text: t.name;
+                        selected: t.active;
+                        min-width: 72px;
+                        horizontal-stretch: 0;
+                        clicked => { ConsoleState.select-tab(i); }
+                        held => { if i > 0 { menu-tab = i; } }
+                    }
+                    Chip { text: "＋"; min-width: 48px; horizontal-stretch: 0; clicked => { ConsoleState.new-tab(); } }
+                    Rectangle { }
+                    Chip {
+                        text: root.keyboard-visible ? "キー▼" : "キー▲";
+                        min-width: 84px;
+                        horizontal-stretch: 0;
+                        clicked => { ConsoleState.kbd-shown = !ConsoleState.kbd-shown; }
+                    }
+                }
+            }
+        }
+        // Output
+        Rectangle {
+            vertical-stretch: 1;
+            min-height: root.min-output;
+            background: #0b0e13;
+            init => { ConsoleState.output-width(self.width); }
+            changed width => { ConsoleState.output-width(self.width); }
+            // The list scrolls vertically. The tab swipe lives on the tab bar: a
+            // SwipeGestureHandler over (or around) the list swallows the first moves of a drag
+            // while it holds the press back, so the list would not scroll.
+            lv := ListView {
+                for r in ConsoleState.rows: RowView {
+                    data: r;
+                    fold(b) => { ConsoleState.fold(b); }
+                }
+                // Follow the newest line only while stuck to the bottom. A growing list
+                // leaves content-y alone once the user has scrolled up.
+                changed content-height => {
+                    if root.stick { self.content-y = min(0px, self.visible-height - self.content-height); }
+                }
+                changed content-y => {
+                    root.stick = self.content-y <= self.visible-height - self.content-height + 6px;
+                    ConsoleState.view-y = self.content-y;
+                    ConsoleState.view-stuck = root.stick;
                 }
             }
             // Enter jumps to the bottom.
@@ -201,7 +234,7 @@ export component ConsolePanel inherits Rectangle {
             }
         }
         // Completion candidates
-        if ConsoleState.candidates.length > 0: Rectangle {
+        if root.has-cands && root.show-cands: Rectangle {
             height: 52px;
             background: #161b22;
             Flickable {
@@ -218,7 +251,7 @@ export component ConsolePanel inherits Rectangle {
             }
         }
         // Quick commands: tap inserts, hold removes.
-        if ConsoleState.is-shell && !(root.compact && root.keyboard-visible): Rectangle {
+        if ConsoleState.is-shell && root.show-quick: Rectangle {
             height: 52px;
             background: #161b22;
             Flickable {
@@ -257,6 +290,15 @@ export component ConsolePanel inherits Rectangle {
                 Text { text: ConsoleState.input-after; color: Theme.text; font-size: 16px; font-family: "DejaVu Sans Mono"; vertical-alignment: center; }
             }
             TouchArea { clicked => { ConsoleState.kbd-shown = true; } }
+            // The tab row (and its キー▼ toggle) is dropped when the screen is short.
+            if root.keyboard-visible && !root.show-tabs: Chip {
+                x: parent.width - self.width - 4px;
+                y: 0px;
+                width: 56px;
+                height: parent.height;
+                text: "▼";
+                clicked => { ConsoleState.kbd-shown = false; }
+            }
         }
         if !ConsoleState.is-shell: Rectangle {
             height: 52px;
@@ -274,7 +316,7 @@ export component ConsolePanel inherits Rectangle {
             }
         }
         if root.keyboard-visible: Keyboard {
-            height: root.kbd-height;
+            height: root.kbd-h;
             sym: ConsoleState.sym;
             ctrl: ConsoleState.ctrl;
             alt: ConsoleState.alt;

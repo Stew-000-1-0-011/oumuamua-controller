@@ -27,8 +27,6 @@ export component OutputScreen inherits Rectangle {
     in property <string> reason-text;
     // Connected to the in-app demo robot.
     in property <bool> demo;
-    // Window height; the keyboard takes about 55% of it (keys stay at least 32px).
-    in property <length> window-height: 640px;
 
     in property <image> map-image;
     in property <float> map-cx;
@@ -163,8 +161,5 @@ export component OutputScreen inherits Rectangle {
         y: root.console-wide ? 0px : Theme.band-h;
         width: root.console-wide ? root.width : root.width - root.map-w;
         height: root.console-wide ? root.height : root.body-h;
-        kbd-height: max(root.window-height * 0.55, 206px);
-        // Little room left above the keyboard: drop the quick-command row.
-        compact: self.height - self.kbd-height < 230px;
     }
 }

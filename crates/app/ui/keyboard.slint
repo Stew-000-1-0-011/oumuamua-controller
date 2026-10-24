@@ -16,7 +16,9 @@ component Key inherits Rectangle {
     property <bool> hidden: !ScreenState.output-active;
 
     horizontal-stretch: root.weight * 100;
-    min-height: 32px;
+    accessible-role: button;
+    accessible-label: root.cap;
+    min-height: 20px;
     border-radius: 5px;
     border-width: root.state == 1 ? 2px : 0px;
     border-color: Theme.accent;
