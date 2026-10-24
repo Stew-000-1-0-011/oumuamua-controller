@@ -101,23 +101,54 @@ def test_lift_to_above_max_rejected():
     assert io.calls[-2:] == [("lift_zero", 0), ("lift_zero", 1)]
 
 
+def run_task(io, h, req=1):
+    """RUN_TASK, then let the tracker enable succeed (auto_done=False fakes)."""
+    h.handle([P.RUN_TASK, req, 2, 0, 1, 2, 3])
+    name, done = io.pending.pop(0)
+    assert name == "set_tracker"
+    done(True, "")
+
+
 def test_run_task_enters_auto_and_done_returns_to_manual():
     io, sup, h, sent, _ = make(auto_done=False)
     h.handle([P.RUN_TASK, 1, 2, 0, 1, 2, 3])
-    assert io.calls == [("run_task", 2, 0, 1, 2, 3)]
+    assert io.calls == [("set_tracker", True)]  # tracking first: task_commander drives
     assert sent == [[P.RESULT, 1, True, ""]]
     assert sup.mode == Mode.AUTO
+    io.pending.pop(0)[1](True, "")
+    assert io.calls == [("set_tracker", True), ("run_task", 2, 0, 1, 2, 3)]
     assert h.current_task == (2, "", (0, 1, 2, 3))
     io.task_step("lift up")
     assert h.current_task == (2, "lift up", (0, 1, 2, 3))
     io.task_done(True, "ok")
     assert sent[-1] == [P.TASK_DONE, 2, True, "ok"]
+    assert io.calls[-1] == ("set_tracker", False)
     assert h.current_task is None and sup.mode == Mode.MANUAL
+
+
+def test_run_task_tracker_failure_ends_task():
+    io, sup, h, sent, _ = make(auto_done=False)
+    h.handle([P.RUN_TASK, 1, 2, 0, 1, 2, 3])
+    io.pending.pop(0)[1](False, "no service")
+    assert ("run_task", 2, 0, 1, 2, 3) not in io.calls
+    assert sent[-1] == [P.TASK_DONE, 2, False, "tracker: no service"]
+    assert h.current_task is None and sup.mode == Mode.MANUAL
+
+
+def test_estop_while_task_tracker_pending_does_not_start_task():
+    io, sup, h, sent, _ = make(auto_done=False)
+    h.handle([P.RUN_TASK, 1, 2, 0, 1, 2, 3])
+    sup.on_control(1.0, ctl(estop=True))
+    io.calls.clear()
+    io.pending.pop(0)[1](True, "")  # late enable
+    assert not any(c[0] == "run_task" for c in io.calls)
+    assert ("set_tracker", False) in io.calls
+    assert sup.mode == Mode.STOP and h.current_task is None
 
 
 def test_busy_rejects_second_task():
     io, sup, h, sent, _ = make(auto_done=False)
-    h.handle([P.RUN_TASK, 1, 2, 0, 1, 2, 3])
+    run_task(io, h)
     sent.clear()
     h.handle([P.RUN_TASK, 2, 2, 0, 1, 2, 3])
     assert sent == [[P.RESULT, 2, False, "busy"]]
@@ -229,7 +260,7 @@ def test_cancel_while_start_path_pending():
 
 def test_late_task_done_after_estop_release_is_ignored():
     io, sup, h, sent, _ = make(auto_done=False)
-    h.handle([P.RUN_TASK, 1, 2, 0, 1, 2, 3])
+    run_task(io, h)
     old_done, old_step = io.task_done, io.task_step
     sup.on_control(1.0, ctl(estop=True))
     assert h.current_task is None
@@ -253,7 +284,7 @@ def test_cancel_clears_current_task_immediately():
 def test_estop_during_run_task_call_cancels_started_task():
     io, sup, h, sent, _ = make(auto_done=False)
     io.on_run_task = lambda: sup.on_control(1.0, ctl(estop=True))
-    h.handle([P.RUN_TASK, 1, 2, 0, 1, 2, 3])
+    run_task(io, h)
     names = [c[0] for c in io.calls]
     assert names.index("run_task") < len(names) - 1 - names[::-1].index("cancel_task")
     assert sup.mode == Mode.STOP and h.current_task is None

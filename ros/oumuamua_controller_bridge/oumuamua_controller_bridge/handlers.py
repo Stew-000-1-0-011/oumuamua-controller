@@ -170,13 +170,29 @@ class Handlers:
                     if epoch != self._epoch:
                         return  # stopped or cancelled meanwhile: stale
                     self.current_task = None
+                    self.io.set_tracker(False, _noop)
                     self.send([P.TASK_DONE, kind, bool(ok), message])
                     self.sup.leave_auto()
 
-            # Started under the lock so a stop cannot slip in between.
-            self.io.run_task(kind, gripper, block, column, row, step, done)
-            if epoch != self._epoch:  # stopped from inside the call: cancel what just began
-                self.io.cancel_task()
+            # task_commander drives through path_follower, whose references only move the robot
+            # while tracker_node is enabled: enable it first, as START_PATH does.
+            def tracker(ok, message):
+                with self.sup.lock:
+                    if epoch != self._epoch:  # stopped or cancelled meanwhile
+                        if ok and self.current_task is None and self.current_path is None:
+                            self.io.set_tracker(False, _noop)
+                        return
+                    if not ok:
+                        self.current_task = None
+                        self.send([P.TASK_DONE, kind, False, f"tracker: {message}"])
+                        self.sup.leave_auto()
+                        return
+                    # Started under the lock so a stop cannot slip in between.
+                    self.io.run_task(kind, gripper, block, column, row, step, done)
+                    if epoch != self._epoch:  # stopped from inside the call: cancel what just began
+                        self.io.cancel_task()
+
+            self.io.set_tracker(True, tracker)
 
     def _cancel(self, req, m):
         with self.sup.lock:
