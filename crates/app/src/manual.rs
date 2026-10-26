@@ -29,16 +29,26 @@ pub fn actuation_blocked(mode: Option<Mode>, estop: bool) -> bool {
 }
 
 /// Maps a stick deflection to (vx, vy) in m/s. `dx` is positive to the screen's right and `dy`
-/// positive to the screen's bottom (Slint coordinates), both in -1..1. Up is +x (forward) and
-/// left is +y. Inside the deadzone the result is zero; the deflection length is clamped to 1.
-pub fn stick_to_velocity(dx: f32, dy: f32, level: (f64, f64)) -> (f64, f64) {
+/// positive to the screen's bottom (Slint coordinates), both in -1..1.
+///
+/// Robot frame (`field_frame` false): up is +x (forward) and left is +y.
+/// Field frame: the stick is a map joystick. The map draws +x to the right and +y up, so up is
+/// field +y and right is field +x. The bridge rotates (vx, vy) by the robot's yaw, so only the
+/// axes are chosen here.
+///
+/// Inside the deadzone the result is zero; the deflection length is clamped to 1.
+pub fn stick_to_velocity(dx: f32, dy: f32, level: (f64, f64), field_frame: bool) -> (f64, f64) {
     let (dx, dy) = (f64::from(dx), f64::from(dy));
     let len = dx.hypot(dy);
     if !len.is_finite() || len < f64::from(DEADZONE) {
         return (0.0, 0.0);
     }
     let k = if len > 1.0 { 1.0 / len } else { 1.0 };
-    let (vx, vy) = (-dy * k * level.0, -dx * k * level.0);
+    let (vx, vy) = if field_frame {
+        (dx * k * level.0, -dy * k * level.0)
+    } else {
+        (-dy * k * level.0, -dx * k * level.0)
+    };
     // Avoid "-0.0" on the wire for exact axes.
     (vx + 0.0, vy + 0.0)
 }
@@ -175,7 +185,7 @@ impl Manual {
         let before = *c;
         if allowed {
             let lv = self.level_pair(levels);
-            (c.vx, c.vy) = stick_to_velocity(self.stick.0, self.stick.1, lv);
+            (c.vx, c.vy) = stick_to_velocity(self.stick.0, self.stick.1, lv, self.field_frame);
             c.wz = slider_to_omega(self.slider, lv);
             c.field_frame = self.field_frame;
             [c.jog_left, c.jog_right] = self.jog;
@@ -196,26 +206,58 @@ mod tests {
 
     #[test]
     fn stick_deadzone_and_clamp() {
-        assert_eq!(stick_to_velocity(0.0, 0.0, LV), (0.0, 0.0));
-        assert_eq!(stick_to_velocity(0.05, -0.05, LV), (0.0, 0.0));
+        assert_eq!(stick_to_velocity(0.0, 0.0, LV, false), (0.0, 0.0));
+        assert_eq!(stick_to_velocity(0.05, -0.05, LV, false), (0.0, 0.0));
         // Just outside the deadzone moves.
-        assert!(stick_to_velocity(0.0, -0.11, LV).0 > 0.0);
+        assert!(stick_to_velocity(0.0, -0.11, LV, false).0 > 0.0);
         // Full deflection gives the level's speed; beyond that is clamped to length 1.
-        let (vx, vy) = stick_to_velocity(0.0, -1.0, LV);
+        let (vx, vy) = stick_to_velocity(0.0, -1.0, LV, false);
         assert!((vx - 0.8).abs() < 1e-9 && vy == 0.0);
-        let (vx, vy) = stick_to_velocity(-3.0, -4.0, LV);
+        let (vx, vy) = stick_to_velocity(-3.0, -4.0, LV, false);
         assert!((vx.hypot(vy) - 0.8).abs() < 1e-9);
-        assert!(stick_to_velocity(f32::NAN, 0.0, LV) == (0.0, 0.0));
+        assert!(stick_to_velocity(f32::NAN, 0.0, LV, false) == (0.0, 0.0));
     }
 
     #[test]
     fn stick_axes() {
-        let (vx, vy) = stick_to_velocity(0.0, -0.5, LV);
+        let (vx, vy) = stick_to_velocity(0.0, -0.5, LV, false);
         assert!((vx - 0.4).abs() < 1e-9 && vy == 0.0, "up is +vx");
-        let (vx, vy) = stick_to_velocity(-0.5, 0.0, LV);
+        let (vx, vy) = stick_to_velocity(-0.5, 0.0, LV, false);
         assert!(vx == 0.0 && (vy - 0.4).abs() < 1e-9, "left is +vy");
-        let (vx, vy) = stick_to_velocity(0.5, 0.5, LV);
+        let (vx, vy) = stick_to_velocity(0.5, 0.5, LV, false);
         assert!(vx < 0.0 && vy < 0.0, "down-right is backward and to the right");
+    }
+
+    #[test]
+    fn stick_axes_in_field_frame() {
+        // Up is field +y, right is field +x, matching the map (+x right, +y up).
+        let (vx, vy) = stick_to_velocity(0.0, -0.5, LV, true);
+        assert!(vx == 0.0 && (vy - 0.4).abs() < 1e-9, "up is +y");
+        let (vx, vy) = stick_to_velocity(0.5, 0.0, LV, true);
+        assert!((vx - 0.4).abs() < 1e-9 && vy == 0.0, "right is +x");
+        let (vx, vy) = stick_to_velocity(-0.5, 0.0, LV, true);
+        assert!((vx + 0.4).abs() < 1e-9 && vy == 0.0, "left is -x");
+        let (vx, vy) = stick_to_velocity(0.0, 0.5, LV, true);
+        assert!(vx == 0.0 && (vy + 0.4).abs() < 1e-9, "down is -y");
+        // Up-right is +x +y; the length is clamped and the deadzone still applies.
+        let (vx, vy) = stick_to_velocity(3.0, -3.0, LV, true);
+        assert!(vx > 0.0 && vy > 0.0 && (vx.hypot(vy) - 0.8).abs() < 1e-9);
+        assert_eq!(stick_to_velocity(0.05, -0.05, LV, true), (0.0, 0.0));
+    }
+
+    #[test]
+    fn apply_uses_the_frame_of_the_stick_mapping() {
+        let mut c = ControlInput::default();
+        let mut m = Manual::default();
+        m.set_stick(0.0, -1.0); // up
+        m.apply(&mut c, &DEFAULT_LEVELS, true);
+        assert!((c.vx - 0.3).abs() < 1e-9 && c.vy == 0.0 && !c.field_frame, "robot: forward");
+        m.field_frame = true;
+        m.apply(&mut c, &DEFAULT_LEVELS, true);
+        assert!(c.vx == 0.0 && (c.vy - 0.3).abs() < 1e-9 && c.field_frame, "field: +y");
+        m.set_stick(1.0, 0.0); // right
+        m.apply(&mut c, &DEFAULT_LEVELS, true);
+        assert!((c.vx - 0.3).abs() < 1e-9 && c.vy == 0.0, "field: +x");
     }
 
     #[test]
