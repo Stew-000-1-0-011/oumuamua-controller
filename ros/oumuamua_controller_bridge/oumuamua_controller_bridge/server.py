@@ -336,7 +336,7 @@ class BridgeServer:
             mode, reason,
             [float(v) for v in snap.pose] if snap.pose else None,
             [float(v) for v in snap.vel] if snap.vel else None,
-            [[float(w[0]), bool(w[1])] for w in snap.wheels],
+            [P.motor_row(i, w) for i, w in enumerate(snap.wheels)],
             [self._gripper(g) for g in list(snap.grippers)[:2]],
             [int(task[0]), str(task[1]), [int(a) for a in task[2]]] if task else None,
             [str(path[0]), bool(path[1])] if path else None,

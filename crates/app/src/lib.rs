@@ -5,6 +5,7 @@ pub mod glue;
 pub mod manual;
 pub mod map;
 pub mod model;
+pub mod motors;
 pub mod storage;
 
 slint::include_modules!();

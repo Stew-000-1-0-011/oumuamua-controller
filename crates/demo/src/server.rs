@@ -4,7 +4,7 @@
 use crate::shell::{self, Shell};
 use crate::sim::{self, Event, Sim};
 use link::reliable::{Receiver as RelRx, Sender as RelTx};
-use proto::{Control, Datagram, MAX_POINTS_PER_SCAN, Mode, Msg, State, Wheel};
+use proto::{Control, Datagram, MAX_POINTS_PER_SCAN, Mode, Msg, State};
 use std::collections::HashMap;
 use std::io;
 use std::net::{SocketAddr, UdpSocket};
@@ -603,7 +603,7 @@ impl Server {
             stop_reason: self.reason.clone(),
             pose: Some(self.sim.pose),
             vel: Some(self.sim.cmd),
-            wheels: vec![Wheel { vdc: 24.0, ok: true }; 3],
+            wheels: self.sim.motors(),
             grippers: self.sim.grippers(),
             task: self.sim.task_state(),
             path: self.sim.path_state(),

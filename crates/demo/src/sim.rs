@@ -1,7 +1,7 @@
 //! The simulated robot: a planar pose driven by body-frame velocity, two lifts, suction,
 //! a staged task, a timed path run and a 1-degree LiDAR. Time advances only through `advance`.
 
-use proto::{Gripper, TaskState};
+use proto::{Gripper, MOTOR_MODE_DISABLED, MOTOR_MODE_VELOCITY, TaskState, Wheel};
 
 pub const ROBOT_NAME: &str = "oumuamua (demo)";
 pub const PATHS: [&str; 2] = ["slalom_forward", "slalom_backward"];
@@ -17,6 +17,18 @@ pub const BOUNDS: [f64; 4] = [-2.786, -1.655, 2.786, 1.655];
 pub const SHELF: [f64; 4] = [1.5625, -0.30, 2.5025, 0.30];
 pub const START: [f64; 3] = [-2.2, 1.3, 0.0];
 pub const ROBOT_RADIUS: f64 = 0.32;
+// Motor model: the same as `motor_snapshot` in fake_robot.py (a test keeps the constants equal).
+// Wheel i sits at 90 + 120 i degrees; its speed is the body velocity along its rolling direction
+// plus the turn, the current is proportional to speed, a suction motor draws SUCTION_A while on,
+// and the bus sags with the load.
+pub const WHEEL_RADIUS: f64 = 0.05;
+pub const WHEEL_BASE: f64 = 0.2;
+pub const WHEEL_A_PER_RAD_S: f64 = 0.06;
+pub const SUCTION_A: f64 = 2.5;
+pub const SUCTION_RAD_S: f64 = 300.0;
+pub const VDC_NOMINAL: f64 = 24.0;
+pub const VDC_SAG_PER_A: f64 = 0.05;
+pub const MOTOR_NAMES: [&str; 5] = ["車輪0", "車輪1", "車輪2", "吸引 左", "吸引 右"];
 pub const OBSTACLES: [[f64; 4]; 13] = [
     [-2.8025, -0.0165, 1.5625, 0.0165],
     [-0.8375, 0.019, -0.8045, 0.8905],
@@ -213,6 +225,40 @@ impl Sim {
         })
     }
 
+    /// The three wheels and the two suction motors for the current command and suction state.
+    pub fn motors(&self) -> Vec<Wheel> {
+        let [vx, vy, wz] = self.cmd;
+        let mut out = Vec::with_capacity(5);
+        for (i, name) in MOTOR_NAMES.iter().take(3).enumerate() {
+            let a = (90.0 + 120.0 * i as f64).to_radians();
+            let speed = (-a.sin() * vx + a.cos() * vy + WHEEL_BASE * wz) / WHEEL_RADIUS;
+            let current = WHEEL_A_PER_RAD_S * speed;
+            out.push(Wheel {
+                vdc: VDC_NOMINAL - VDC_SAG_PER_A * current.abs(),
+                ok: true,
+                current,
+                velocity: speed,
+                mode: MOTOR_MODE_VELOCITY,
+                flags: 0,
+                name: (*name).to_owned(),
+            });
+        }
+        for (on, name) in self.suction.iter().zip(&MOTOR_NAMES[3..]) {
+            let (current, velocity, mode) =
+                if *on { (SUCTION_A, SUCTION_RAD_S, MOTOR_MODE_VELOCITY) } else { (0.0, 0.0, MOTOR_MODE_DISABLED) };
+            out.push(Wheel {
+                vdc: VDC_NOMINAL - VDC_SAG_PER_A * current,
+                ok: true,
+                current,
+                velocity,
+                mode,
+                flags: 0,
+                name: (*name).to_owned(),
+            });
+        }
+        out
+    }
+
     // -------------------------------------------------------- task / path
     pub fn start_task(&mut self, kind: u8, args: [i32; 4]) {
         self.task = Some(Task { kind, args, stage: 0, t: 0.0 });
@@ -382,6 +428,61 @@ mod tests {
             }
         }
         plain.split_whitespace().filter_map(|t| t.parse().ok()).collect()
+    }
+
+    /// `NAME = number` at the top level of fake_robot.py.
+    fn fake_const(name: &str) -> f64 {
+        const PY: &str = include_str!("../../../ros/oumuamua_controller_bridge/oumuamua_controller_bridge/fake_robot.py");
+        let line = PY.lines().find(|l| l.starts_with(&format!("{name} = "))).expect(name);
+        let v = line.split_once('=').unwrap().1.split('#').next().unwrap().trim();
+        v.parse().unwrap_or_else(|_| panic!("{name} = {v}"))
+    }
+
+    #[test]
+    fn motor_model_matches_the_fake_robot() {
+        for (name, rust) in [
+            ("WHEEL_RADIUS", WHEEL_RADIUS),
+            ("WHEEL_BASE", WHEEL_BASE),
+            ("WHEEL_A_PER_RAD_S", WHEEL_A_PER_RAD_S),
+            ("SUCTION_A", SUCTION_A),
+            ("SUCTION_RAD_S", SUCTION_RAD_S),
+            ("VDC_NOMINAL", VDC_NOMINAL),
+            ("VDC_SAG_PER_A", VDC_SAG_PER_A),
+        ] {
+            assert_eq!(fake_const(name), rust, "{name}");
+        }
+        const PY: &str = include_str!("../../../ros/oumuamua_controller_bridge/oumuamua_controller_bridge/protocol.py");
+        let names = MOTOR_NAMES.map(|n| format!("\"{n}\"")).join(", ");
+        assert!(PY.contains(&format!("MOTOR_NAMES = [{names}]")));
+    }
+
+    #[test]
+    fn motors_follow_the_command_and_suction() {
+        let mut s = Sim::default();
+        let m = s.motors();
+        assert_eq!(m.len(), 5);
+        assert!(m.iter().all(|w| w.ok));
+        assert_eq!(m[0].name, "車輪0");
+        assert_eq!(m[4].name, "吸引 右");
+        // At rest: wheels in velocity mode drawing nothing, suction disabled.
+        assert!(m[..3].iter().all(|w| w.mode == MOTOR_MODE_VELOCITY && w.current == 0.0 && w.velocity == 0.0));
+        assert!(m[3..].iter().all(|w| w.mode == MOTOR_MODE_DISABLED && w.current == 0.0));
+        // Current is proportional to the commanded speed.
+        s.cmd = [0.5, 0.0, 0.0];
+        let slow = s.motors();
+        s.cmd = [1.0, 0.0, 0.0];
+        let fast = s.motors();
+        for (a, b) in slow[..3].iter().zip(&fast[..3]) {
+            assert!((b.velocity - 2.0 * a.velocity).abs() < 1e-9);
+            assert!((b.current - WHEEL_A_PER_RAD_S * b.velocity).abs() < 1e-9);
+        }
+        assert!(fast[..3].iter().any(|w| w.velocity.abs() > 1.0));
+        assert!(fast[0].vdc < 24.0 && fast[0].vdc > 20.0, "the bus sags a little under load");
+        // The suction motor draws current only while on.
+        s.suction = [false, true];
+        let m = s.motors();
+        assert_eq!((m[3].current, m[3].mode), (0.0, MOTOR_MODE_DISABLED));
+        assert_eq!((m[4].current, m[4].mode), (SUCTION_A, MOTOR_MODE_VELOCITY));
     }
 
     #[test]

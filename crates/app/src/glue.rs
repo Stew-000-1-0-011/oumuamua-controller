@@ -5,7 +5,7 @@ use crate::console::{self, Console, PromptKind};
 use crate::manual::{self, Manual};
 use crate::model::{end_session, AppModel, ConnState, DemoSlot, StopLatch};
 use crate::map::{self, PaneState, Scene};
-use crate::{Beacon, ConsoleRow, ConsoleSpan, ConsoleState, ConsoleTabInfo, MainWindow, PresetInfo, WheelInfo, storage};
+use crate::{Beacon, ConsoleRow, ConsoleSpan, ConsoleState, ConsoleTabInfo, MainWindow, MotorRow, PresetInfo, WheelInfo, motors, storage};
 use link::{Client, ControlInput, Discovery, LinkEvent};
 use proto::{Mode, Msg};
 use term::{ModState, Modifier, Row};
@@ -308,6 +308,7 @@ impl Glue {
             w.set_band_pose("位置 -".into());
             w.set_band_vel("速度 -".into());
             w.set_band_wheels(ModelRc::default());
+            w.set_band_motors(ModelRc::default());
             w.set_band_mode("".into());
             w.set_band_reason("".into());
             return;
@@ -320,12 +321,23 @@ impl Glue {
             Some([vx, vy, wz]) => format!("速度 {vx:.2}, {vy:.2}  旋回 {wz:.2}"),
             None => "速度 -".to_owned(),
         }.into());
-        let wheels: Vec<WheelInfo> = s
-            .wheels
-            .iter()
-            .map(|wh| WheelInfo { text: format!("{:.1}V", wh.vdc).into(), ok: wh.ok })
+        let chips: Vec<WheelInfo> =
+            motors::compact(&s.wheels).into_iter().map(|c| WheelInfo { text: c.text.into(), ok: c.ok }).collect();
+        update_rows(&w.get_band_wheels(), chips, |m| w.set_band_wheels(m));
+        let rows: Vec<MotorRow> = motors::detail(&s.wheels)
+            .into_iter()
+            .map(|r| MotorRow {
+                name: r.name.into(),
+                volts: r.volts.into(),
+                amps: r.amps.into(),
+                speed: r.speed.into(),
+                mode: r.mode.into(),
+                saturated: r.saturated,
+                vdc_low: r.vdc_low,
+                ok: r.ok,
+            })
             .collect();
-        w.set_band_wheels(ModelRc::from(Rc::new(VecModel::from(wheels))));
+        update_rows(&w.get_band_motors(), rows, |m| w.set_band_motors(m));
         let (mode, color) = match s.mode {
             Mode::Manual => ("手動", slint::Color::from_rgb_u8(0x3f, 0xb9, 0x50)),
             Mode::Auto => ("自動", slint::Color::from_rgb_u8(0x3d, 0x8b, 0xfd)),
@@ -1221,6 +1233,23 @@ impl Glue {
 }
 
 /// Wires `window` up; keep the returned handle alive for as long as the window runs.
+/// Puts `rows` into the model `current` in place when it is a `VecModel` of the same length
+/// (changed rows only), else installs a new model with `set`. The detail panel is redrawn from
+/// a state 20 times a second; this keeps its elements instead of rebuilding them.
+fn update_rows<T: Clone + PartialEq + 'static>(current: &ModelRc<T>, rows: Vec<T>, set: impl FnOnce(ModelRc<T>)) {
+    if let Some(vm) = current.as_any().downcast_ref::<VecModel<T>>()
+        && vm.row_count() == rows.len()
+    {
+        for (i, r) in rows.into_iter().enumerate() {
+            if vm.row_data(i).as_ref() != Some(&r) {
+                vm.set_row_data(i, r);
+            }
+        }
+        return;
+    }
+    set(ModelRc::from(Rc::new(VecModel::from(rows))));
+}
+
 pub fn start(window: &MainWindow) -> Rc<RefCell<GlueHandle>> {
     let (discovery, beacons_rx, status) = match Discovery::start() {
         Ok((d, rx)) => (Some(d), Some(rx), String::new()),
@@ -1517,6 +1546,21 @@ impl Drop for GlueHandle {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn update_rows_edits_the_model_in_place_while_the_length_holds() {
+        let model = ModelRc::from(Rc::new(VecModel::from(vec![1, 2, 3])));
+        let mut replaced = false;
+        update_rows(&model, vec![1, 5, 3], |_| replaced = true);
+        assert!(!replaced);
+        assert_eq!(model.iter().collect::<Vec<_>>(), [1, 5, 3]);
+        let mut fresh = None;
+        update_rows(&model, vec![7, 8], |m| fresh = Some(m));
+        assert_eq!(fresh.unwrap().iter().collect::<Vec<_>>(), [7, 8]);
+        let mut fresh = None;
+        update_rows(&ModelRc::<i32>::default(), vec![], |m| fresh = Some(m));
+        assert!(fresh.is_some(), "an empty default model is not a VecModel: it is replaced");
+    }
 
     #[test]
     fn silent_beacons_expire_after_five_seconds() {

@@ -47,3 +47,19 @@ def test_constants():
     assert (protocol.HELLO, protocol.BYE) == (0, 8)
     assert (protocol.RELEASE_STOP, protocol.SHELL_CLOSED) == (10, 63)
     assert (protocol.MAX_POINTS_PER_SCAN, protocol.MAX_SHELL_CHUNK) == (280, 900)
+
+
+def test_motor_row_defaults_for_a_short_entry_and_names_by_index():
+    assert protocol.motor_row(0, (12.5, True)) == [12.5, True, 0.0, 0.0, protocol.MODE_UNKNOWN, 0, "車輪0"]
+    assert protocol.motor_row(3, (24, 1, 2.5, 300, 2, 4)) == [24.0, True, 2.5, 300.0, 2, 4, "吸引 左"]
+    assert protocol.motor_row(4, (0.0, False))[6] == "吸引 右"
+    assert protocol.motor_row(7, (0.0, False))[6] == "モータ7"
+
+
+def test_state_full_golden_has_five_motors_with_the_extended_layout():
+    wheels = SAMPLES["state_full"][5][4]
+    assert [w[6] for w in wheels] == protocol.MOTOR_NAMES
+    assert all(len(w) == 7 for w in wheels)
+    # The first two elements keep the old meaning (vdc, ok): an older phone reads just those.
+    assert wheels[0][:2] == [12.5, True]
+    assert len(protocol.encode(SAMPLES["state_full"])) <= 1200

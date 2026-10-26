@@ -4,12 +4,12 @@ import { EdgeStrip } from "strip.slint";
 import { LeaveDialog } from "leave.slint";
 import { NoticeBand } from "notice.slint";
 import { ConnectScreen, Beacon } from "connect.slint";
-import { OutputScreen, WheelInfo } from "output.slint";
+import { OutputScreen, WheelInfo, MotorRow } from "output.slint";
 import { ManualPanel, PresetInfo } from "manual.slint";
 import { AutoPanel } from "auto.slint";
 import { ConsoleState, ConsoleRow, ConsoleSpan, ConsoleTabInfo } from "console.slint";
 
-export { Beacon, WheelInfo, PresetInfo, ConsoleState, ConsoleRow, ConsoleSpan, ConsoleTabInfo }
+export { Beacon, WheelInfo, MotorRow, PresetInfo, ConsoleState, ConsoleRow, ConsoleSpan, ConsoleTabInfo }
 
 // Properties are set by glue.rs; later tasks add more but keep these stable.
 export component MainWindow inherits Window {
@@ -34,11 +34,12 @@ export component MainWindow inherits Window {
     changed connected => {
         if !root.connected {
             root.confirm-leave = false;
+            root.motors-open = false;
             if root.pose-pick { root.pose-pick = false; root.auto-pose-cancelled(); }
         }
     }
     // Leaving the output screen ends the pose pick.
-    changed page => { if root.page != 0 && root.pose-pick { root.pose-pick = false; root.auto-pose-cancelled(); } }
+    changed page => { if root.page != 0 { root.motors-open = false; } if root.page != 0 && root.pose-pick { root.pose-pick = false; root.auto-pose-cancelled(); } }
     // Strip: link status text/colour, rtt in ms (-1 unknown), stop latch ("解除" shown).
     in property <string> conn-text: "未接続";
     in property <color> conn-color: Theme.dim;
@@ -58,6 +59,9 @@ export component MainWindow inherits Window {
     in property <string> band-pose: "位置 -";
     in property <string> band-vel: "速度 -";
     in property <[WheelInfo]> band-wheels;
+    in property <[MotorRow]> band-motors;
+    // The motor detail panel over the output screen is open (closed when the page changes).
+    in-out property <bool> motors-open: false;
     in property <string> band-mode;
     in property <color> band-mode-color: Theme.dim;
     in property <string> band-reason;
@@ -186,6 +190,8 @@ export component MainWindow inherits Window {
         pose-text: root.band-pose;
         vel-text: root.band-vel;
         wheels: root.band-wheels;
+        motor-rows: root.band-motors;
+        motors-open <=> root.motors-open;
         demo: root.demo;
         mode-text: root.band-mode;
         mode-color: root.band-mode-color;

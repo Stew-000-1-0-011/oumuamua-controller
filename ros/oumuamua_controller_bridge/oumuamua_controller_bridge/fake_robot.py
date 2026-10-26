@@ -22,6 +22,36 @@ LIFT_SPEED = 0.05  # m/s
 STAGE_S = 1.0
 PATH_RUN_S = 3.0
 MAX_RANGE = 30.0
+# Motor model (the demo crate mirrors it): wheel i sits at 90 + 120 i degrees; its speed is the
+# commanded body velocity projected on the rolling direction, plus the turn. Current is
+# proportional to speed; a suction motor draws SUCTION_A while on. The bus sags with the load.
+WHEEL_RADIUS = 0.05  # m
+WHEEL_BASE = 0.2  # m, centre to wheel
+WHEEL_A_PER_RAD_S = 0.06
+SUCTION_A = 2.5
+SUCTION_RAD_S = 300.0
+VDC_NOMINAL = 24.0
+VDC_SAG_PER_A = 0.05
+
+
+def motor_snapshot(cmd, suction):
+    """Five motors (3 wheels, 2 suction) for the commanded body velocity and suction states."""
+    vx, vy, wz = cmd
+    out = []
+    for i in range(P.WHEEL_COUNT):
+        a = math.radians(90.0 + 120.0 * i)
+        speed = (-math.sin(a) * vx + math.cos(a) * vy + WHEEL_BASE * wz) / WHEEL_RADIUS
+        cur = WHEEL_A_PER_RAD_S * speed
+        out.append((VDC_NOMINAL - VDC_SAG_PER_A * abs(cur), True, cur, speed, P.MODE_VELOCITY, 0))
+    for on in suction:
+        if on:
+            out.append((VDC_NOMINAL - VDC_SAG_PER_A * SUCTION_A, True, SUCTION_A, SUCTION_RAD_S,
+                        P.MODE_VELOCITY, 0))
+        else:
+            out.append((VDC_NOMINAL, True, 0.0, 0.0, P.MODE_DISABLED, 0))
+    return out
+
+
 PATHS = ["slalom_forward", "slalom_backward"]
 TASK_STAGES = {0: ["ブロックへ移動", "吸着", "持ち上げ"], 5: ["棚へ移動", "差し込み", "解放"]}
 DEFAULT_STAGES = ["移動中", "到着"]
@@ -222,7 +252,7 @@ class FakeRosIo:
             fire = self._advance()
             snap = Snapshot(
                 pose=tuple(self._pose), vel=self._cmd,
-                wheels=[(24.0, True)] * 3,
+                wheels=motor_snapshot(self._cmd, self._suction),
                 grippers=[(l["h"], l["goal"], l["moving"], l["arrived"], self._suction[i], True)
                           for i, l in enumerate(self._lift)],
                 scan=self._scan(), path=list(self._path), task_text=self._task_text(),

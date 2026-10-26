@@ -38,11 +38,18 @@ Rust (`crates/proto`) と Python (`ros/oumuamua_controller_bridge/oumuamua_contr
 
 ### 2.1 State
 
-`[mode: u8, stop_reason: str, pose: [x, y, yaw] | nil, vel: [vx, vy, wz] | nil, wheels: [[vdc: f64, ok: bool] ...], grippers: [Gripper | nil, Gripper | nil], task: Task | nil, path: [name: str, active: bool] | nil, tracker_enabled: bool]`
+`[mode: u8, stop_reason: str, pose: [x, y, yaw] | nil, vel: [vx, vy, wz] | nil, wheels: [Motor ...], grippers: [Gripper | nil, Gripper | nil], task: Task | nil, path: [name: str, active: bool] | nil, tracker_enabled: bool]`
 
 - mode: 0 = 手動、1 = 自動、2 = 停止。stop_reason は停止の理由(`"estop"`、`"link lost"`)、停止でなければ ""。
 - pose は自己位置(フィールド座標系)、vel は機体座標系の速度。推定が無ければ nil。
-- wheels は `/wheel<i>/status` の電圧と、状態が届いているか。
+- wheels はモータ基板(mini-shirasu)の状態の並びで、車輪 0..2(`/wheel<i>/status`)、続いて吸引の左・右(`/suction<i>/status`)の最大 5 つ。`mini_shirasu_ros/msg/Status` を使う。
+  - Motor: `[vdc: f64, ok: bool, current: f64, velocity: f64, mode: u8, flags: u8, name: str]`
+  - vdc は母線電圧 [V]。ok は状態が 0.5 秒以内に届いていて、mode が異常(4)でないこと。まだ一度も届いていないモータは `[0.0, false, 0.0, 0.0, 255, 0, name]`。
+  - current は電流 [A]、velocity は角速度 [rad/s]。mode は Status の mode(0 無効、1 電流、2 速度、3 位置、4 異常)。受け取っていなければ 255(詳細なし)。
+  - flags はビット和: 1 = 制御出力が上側に飽和、2 = 下側に飽和、4 = 母線電圧が低く測定値を更新できていない(`vdc_low`)。
+  - name は画面に出す名前: `"車輪0"`、`"車輪1"`、`"車輪2"`、`"吸引 左"`、`"吸引 右"`。
+  - 互換: 後ろの 5 つ(current から name)は後から足したもの。受け取る側は、無い要素(または nil)を既定値(current 0.0、velocity 0.0、mode 255、flags 0、name "")で補う。これで `[vdc, ok]` だけを送る古い橋渡しノードにも繋がる。送る側は常に 7 要素を並べ、先頭の 2 つの意味を変えないので、古いスマホ(先頭の 2 つだけ読み、残りは無視する)も繋がる。
+  - STATE は 5 つのモータを入れても 1200 バイトに収まる(モータ 1 つは約 50 バイト。`crates/proto/tests/motors.rs` が最大級の値で確かめる)。
 - grippers は [左, 右] = [gripper0, gripper1]。届いていなければ nil。
   - Gripper: `[height: f64, goal: f64, moving: bool, arrived: bool, suction: bool, feedback: bool]`
 - task は作業中なら `[kind: u8, step: str, args: [gripper: i32, block: i32, column: i32, row: i32]]`(kind は RunTask の type)。作業中でなければ nil。

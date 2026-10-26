@@ -3,7 +3,10 @@ import { MapPane } from "map.slint";
 import { ConsolePanel } from "console.slint";
 import { Btn } from "manual.slint";
 
+// One supply voltage in the band ("24.1V"); ok is false for a stale or faulted motor.
 export struct WheelInfo { text: string, ok: bool }
+// One row of the motor detail panel (texts are formatted in motors.rs).
+export struct MotorRow { name: string, volts: string, amps: string, speed: string, mode: string, saturated: bool, vdc-low: bool, ok: bool }
 
 component Cell inherits Text {
     color: Theme.text;
@@ -12,8 +15,27 @@ component Cell inherits Text {
     vertical-alignment: center;
 }
 
-// Status band (one line: position, velocity, wheel voltages, mode), the map on the left and
+// One cell of the motor detail table.
+component Col inherits Text {
+    color: Theme.text;
+    font-size: 14px;
+    overflow: elide;
+    vertical-alignment: center;
+}
+
+// A small flag shown on a motor row (飽和, 電圧低下).
+component Mark inherits Rectangle {
+    in property <string> label;
+    background: Theme.warn;
+    border-radius: 3px;
+    width: lt.preferred-width + 8px;
+    height: 18px;
+    lt := Text { text: root.label; color: #000000; font-size: 11px; font-weight: 700; horizontal-alignment: center; vertical-alignment: center; }
+}
+
+// Status band (one line: position, velocity, motor voltages, mode), the map on the left and
 // the console on the right. With the keyboard up the console covers the whole screen.
+// Tapping the motor voltages opens a detail panel over the map and console (below the band).
 export component OutputScreen inherits Rectangle {
     background: Theme.bg;
     init => { ScreenState.output-active = root.visible; }
@@ -21,7 +43,11 @@ export component OutputScreen inherits Rectangle {
 
     in property <string> pose-text: "位置 -";
     in property <string> vel-text: "速度 -";
+    // Compact motor voltages for the band, and the rows of the detail panel.
     in property <[WheelInfo]> wheels;
+    in property <[MotorRow]> motor-rows;
+    // The detail panel is open. Tapping the voltages (or the panel, or ×) toggles it.
+    in-out property <bool> motors-open: false;
     in property <string> mode-text;
     in property <color> mode-color: Theme.dim;
     in property <string> reason-text;
@@ -53,6 +79,8 @@ export component OutputScreen inherits Rectangle {
     property <bool> console-wide: con.keyboard-visible && !root.pose-pick;
     property <length> map-w: root.width * 0.55;
     property <length> body-h: root.height - Theme.band-h;
+    // The keyboard hides the band, so the panel cannot stay open.
+    changed console-wide => { if root.console-wide { root.motors-open = false; } }
 
     // Status band: one line; what does not fit is elided.
     Rectangle {
@@ -67,11 +95,14 @@ export component OutputScreen inherits Rectangle {
             spacing: 12px;
             Cell { text: root.pose-text; }
             Cell { text: root.vel-text; }
-            HorizontalLayout {
-                spacing: 8px;
-                Cell { text: "車輪"; color: Theme.dim; horizontal-stretch: 0; }
+            motors-box := HorizontalLayout {
+                spacing: 6px;
+                horizontal-stretch: 0;
+                Cell { text: "電圧"; font-size: 11px; color: Theme.dim; horizontal-stretch: 0; }
                 for w[i] in root.wheels: Cell {
                     text: w.text;
+                    font-size: 11px;
+                    horizontal-stretch: 0;
                     color: w.ok ? Theme.text : Theme.danger;
                     font-weight: w.ok ? 400 : 700;
                 }
@@ -161,5 +192,73 @@ export component OutputScreen inherits Rectangle {
         y: root.console-wide ? 0px : Theme.band-h;
         width: root.console-wide ? root.width : root.width - root.map-w;
         height: root.console-wide ? root.height : root.body-h;
+    }
+
+    // Motor detail panel: below the band, over the map / console. Anywhere on it closes it.
+    if root.motors-open && !root.console-wide && root.motor-rows.length > 0: Rectangle {
+        x: 8px;
+        y: Theme.band-h + 12px;
+        width: min(root.width - 16px, 540px);
+        height: min(8px + 40px + 20px + root.motor-rows.length * 28px + 8px, root.height - self.y - 8px);
+        // Dark plate; ~0.94 alpha keeps the map's lines from ghosting through the text.
+        background: #0e1218f0;
+        border-radius: 8px;
+        border-width: 1px;
+        border-color: Theme.panel-hi;
+        clip: true;
+        TouchArea { clicked => { root.motors-open = false; } }
+        VerticalLayout {
+            padding: 8px;
+            padding-top: 0px;
+            padding-bottom: 8px;
+            HorizontalLayout {
+                height: 40px;
+                Text { text: "モータの状態"; color: Theme.text; font-size: 16px; font-weight: 700; vertical-alignment: center; }
+                Rectangle {
+                    width: 44px;
+                    height: 40px;
+                    Text { text: "×"; color: Theme.text; font-size: 26px; horizontal-alignment: center; vertical-alignment: center; }
+                    TouchArea { clicked => { root.motors-open = false; } }
+                }
+            }
+            HorizontalLayout {
+                height: 20px;
+                spacing: 6px;
+                Col { text: "モータ"; color: Theme.dim; font-size: 12px; width: 76px; }
+                Col { text: "V"; color: Theme.dim; font-size: 12px; width: 52px; horizontal-alignment: right; }
+                Col { text: "A"; color: Theme.dim; font-size: 12px; width: 56px; horizontal-alignment: right; }
+                Col { text: "rad/s"; color: Theme.dim; font-size: 12px; width: 62px; horizontal-alignment: right; }
+                Col { text: "モード"; color: Theme.dim; font-size: 12px; width: 48px; horizontal-alignment: center; }
+                Col { text: ""; }
+            }
+            for m[i] in root.motor-rows: motor-row := HorizontalLayout {
+                height: 28px;
+                spacing: 6px;
+                property <color> c: m.ok ? Theme.text : Theme.danger;
+                Col { text: m.name; color: motor-row.c; width: 76px; font-weight: m.ok ? 400 : 700; }
+                Col { text: m.volts; color: motor-row.c; width: 52px; horizontal-alignment: right; }
+                Col { text: m.amps; color: motor-row.c; width: 56px; horizontal-alignment: right; }
+                Col { text: m.speed; color: motor-row.c; width: 62px; horizontal-alignment: right; }
+                Col { text: m.mode; color: motor-row.c; width: 48px; horizontal-alignment: center; font-weight: m.ok ? 400 : 700; }
+                HorizontalLayout {
+                    spacing: 4px;
+                    alignment: start;
+                    if m.saturated: Mark { label: "飽和"; y: (parent.height - self.height) / 2; }
+                    if m.vdc-low: Mark { label: "電圧低下"; y: (parent.height - self.height) / 2; }
+                }
+            }
+        }
+    }
+
+    // The tap target of the compact voltages: 44px tall (the band is 32px, so it reaches 12px
+    // into the map). Declared last so that nothing below it takes the touch.
+    if !root.console-wide && root.motor-rows.length > 0: Rectangle {
+        x: motors-box.x - 6px;
+        y: 0px;
+        width: motors-box.width + 12px;
+        height: Theme.tap - 4px;
+        TouchArea {
+            clicked => { root.motors-open = !root.motors-open; }
+        }
     }
 }

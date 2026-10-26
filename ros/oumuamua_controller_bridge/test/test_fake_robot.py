@@ -1,4 +1,6 @@
 import math
+
+import pytest
 from pathlib import Path
 
 from oumuamua_controller_bridge.config import DEFAULTS, build_config, parse_simple_yaml
@@ -123,3 +125,22 @@ def test_fake_stop_path_cancels_run():
     io.start_path("p", lambda ok, m: None, lambda ok, m: ev.append(("done", ok)))
     io.stop_path(lambda ok, m: None)
     assert ev == [("done", False)]
+
+
+def test_fake_motors_follow_the_command_and_suction():
+    io, clk = make()
+    motors = io.snapshot().wheels
+    assert len(motors) == 5
+    assert all(m[1] for m in motors)
+    assert [m[4] for m in motors[:3]] == [2, 2, 2]  # velocity mode even at rest
+    io.publish_cmd_vel(1.0, 0.0, 0.0)
+    wheels = io.snapshot().wheels[:3]
+    assert any(abs(w[3]) > 1.0 for w in wheels)
+    for w in wheels:  # current is proportional to speed
+        assert w[2] == pytest.approx(0.06 * w[3])
+    io.publish_cmd_vel(2.0, 0.0, 0.0)
+    assert abs(io.snapshot().wheels[1][3]) == pytest.approx(2 * abs(wheels[1][3]))
+    io.set_suction(1, True, lambda ok, m: None)
+    sm = io.snapshot().wheels[3:]
+    assert sm[0][2] == 0.0 and sm[0][4] == 0  # left off: disabled
+    assert sm[1][2] == pytest.approx(2.5) and sm[1][4] == 2  # right on: draws current

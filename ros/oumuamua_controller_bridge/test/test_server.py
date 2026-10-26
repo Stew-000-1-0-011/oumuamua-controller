@@ -203,6 +203,8 @@ def test_state_stream_has_ack(env):
     body = m[5]
     assert len(body) == 9
     assert body[0] in (0, 1, 2) and body[2] == [1.0, 2.0, 0.5] and body[8] is False
+    # A short (vdc, ok) entry gets the "no detail" defaults and its name by index.
+    assert body[4] == [[1.5, True, 0.0, 0.0, P.MODE_UNKNOWN, 0, "車輪0"]]
     seqs = [x[2] for x in p.kinds(P.STATE)]
     assert seqs == sorted(seqs)
 
@@ -454,3 +456,20 @@ def test_dropped_shell_output_is_resynced(env):
     assert "t1" in srv._dropped_tabs
     assert p.wait(lambda: len(p.rels(P.SHELL_OPENED)) > n_opened, 5.0)
     assert all(len(P.encode(m)) <= 1200 for m in p.rx)
+
+
+def test_state_carries_five_motors_with_detail_and_fits_a_datagram(env):
+    io, srv, mk = env
+    io.snap = Snapshot(wheels=[
+        (24.0 - 0.1 * i, i != 2, 1.5 * i, -7.25 * i, P.MODE_FAULT if i == 2 else P.MODE_VELOCITY,
+         P.SATURATED_UPPER | P.VDC_LOW if i == 1 else 0) for i in range(5)])
+    p = mk()
+    p.connect()
+    p.control()
+    raw_states = p.wait(lambda: p.kinds(P.STATE))
+    body = raw_states[-1][5]
+    assert [w[6] for w in body[4]] == ["車輪0", "車輪1", "車輪2", "吸引 左", "吸引 右"]
+    assert body[4][1] == [23.9, True, 1.5, -7.25, P.MODE_VELOCITY, 5, "車輪1"]
+    assert body[4][2][1] is False and body[4][2][4] == P.MODE_FAULT
+    assert body[4][4][2:4] == [6.0, -29.0]
+    assert len(P.encode(raw_states[-1])) <= 1200

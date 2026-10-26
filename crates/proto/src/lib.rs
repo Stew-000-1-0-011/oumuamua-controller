@@ -188,6 +188,32 @@ macro_rules! wire_struct {
     };
 }
 
+/// Like `wire_struct!`, then trailing fields added by a later protocol version
+/// (`name = default`). On decode, an absent or nil trailing element takes its default, so a peer
+/// that sends only the leading fields still connects. Encoding always writes every field, in
+/// order, so an older decoder (which reads the leading fields and ignores the rest) still works.
+macro_rules! wire_struct_ext {
+    ($name:ident { $($f:ident),* ; $($g:ident = $d:expr),* $(,)? }) => {
+        impl Wire for $name {
+            fn to_value(&self) -> Value { Value::Array(vec![$(w(&self.$f),)* $(w(&self.$g)),*]) }
+            fn from_value(v: &Value) -> Result<Self, &'static str> {
+                let items = v.as_array().ok_or("array")?;
+                let r = Reader { items };
+                let mut i = 0;
+                $(let $f = { i += 1; r.get(i - 1).map_err(|_| stringify!($name))? };)*
+                $(let $g = {
+                    i += 1;
+                    match items.get(i - 1) {
+                        None | Some(Value::Nil) => $d,
+                        Some(_) => r.get(i - 1).map_err(|_| stringify!($name))?,
+                    }
+                };)*
+                Ok($name { $($f,)* $($g),* })
+            }
+        }
+    };
+}
+
 // ------------------------------------------------------------------- State
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -210,12 +236,46 @@ impl Wire for Mode {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+/// Motor `mode` values (mini_shirasu_ros/msg/Status), plus `MOTOR_MODE_UNKNOWN` for a peer that
+/// sent no detail.
+pub const MOTOR_MODE_DISABLED: u8 = 0;
+pub const MOTOR_MODE_CURRENT: u8 = 1;
+pub const MOTOR_MODE_VELOCITY: u8 = 2;
+pub const MOTOR_MODE_POSITION: u8 = 3;
+pub const MOTOR_MODE_FAULT: u8 = 4;
+pub const MOTOR_MODE_UNKNOWN: u8 = 255;
+/// Bits of `Wheel::flags`.
+pub const MOTOR_SATURATED_UPPER: u8 = 1;
+pub const MOTOR_SATURATED_LOWER: u8 = 2;
+pub const MOTOR_VDC_LOW: u8 = 4;
+
+/// One mini-shirasu motor board: the three wheels, then the two suction motors.
+/// Wire: `[vdc, ok, current, velocity, mode, flags, name]`; only the first two are required.
+#[derive(Debug, Clone, PartialEq)]
 pub struct Wheel {
+    /// Bus voltage [V].
     pub vdc: f64,
+    /// Status is arriving and the board is not in fault.
     pub ok: bool,
+    /// Motor current [A].
+    pub current: f64,
+    /// Angular velocity [rad/s].
+    pub velocity: f64,
+    /// `MOTOR_MODE_*`.
+    pub mode: u8,
+    /// `MOTOR_*` flag bits (saturation, low bus voltage).
+    pub flags: u8,
+    /// Label for the UI ("車輪0", "吸引 左"); empty from an older peer.
+    pub name: String,
 }
-wire_struct!(Wheel { vdc, ok });
+wire_struct_ext!(Wheel { vdc, ok; current = 0.0, velocity = 0.0, mode = MOTOR_MODE_UNKNOWN, flags = 0, name = String::new() });
+
+impl Wheel {
+    /// A board with only the legacy fields (voltage and ok), as an older peer sends it.
+    pub fn legacy(vdc: f64, ok: bool) -> Wheel {
+        Wheel { vdc, ok, current: 0.0, velocity: 0.0, mode: MOTOR_MODE_UNKNOWN, flags: 0, name: String::new() }
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Gripper {

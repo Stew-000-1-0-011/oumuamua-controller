@@ -15,7 +15,7 @@ from action_msgs.msg import GoalStatus
 from geometry_msgs.msg import PoseWithCovarianceStamped, TwistStamped
 from gripper.action import MoveLift
 from gripper.msg import GripperState
-from mini_shirasu_ros.msg import Status as WheelStatus
+from mini_shirasu_ros.msg import Status as MotorStatus
 from nav_msgs.msg import Odometry
 from nav_msgs.msg import Path as PathMsg
 from path_follower.action import FollowPath
@@ -34,9 +34,11 @@ from tf2_ros import Buffer, TransformListener
 
 from . import protocol as P
 from .guards import REPLY_TIMEOUT_S, Watchdog, once, with_timeout
-from .rosio import Done, Snapshot
+from .rosio import Done, Snapshot, motor_entry, motor_fields
 
-WHEEL_COUNT = 3
+WHEEL_COUNT = P.WHEEL_COUNT
+SUCTION_COUNT = P.SUCTION_COUNT
+MOTOR_COUNT = WHEEL_COUNT + SUCTION_COUNT
 GRIPPER_COUNT = 2
 WHEEL_TIMEOUT_S = 0.5
 SERVICE_WAIT_S = 1.0
@@ -78,7 +80,8 @@ class RosIoNode(Node):
         self._lock = threading.Lock()  # guards the data below only
         self._pose = None
         self._vel = None
-        self._wheels = [None] * WHEEL_COUNT  # (vdc, mode, Time)
+        # Mini-shirasu boards: wheels 0..2, then suction 0..1: (motor_fields, Time) or None.
+        self._motors = [None] * MOTOR_COUNT
         self._grippers = [None] * GRIPPER_COUNT
         self._scan = []
         self._path = []
@@ -104,9 +107,11 @@ class RosIoNode(Node):
         self.create_subscription(String, "/task_commander/state", self._on_task_state, LATCHED,
                                  callback_group=g)
         self.create_subscription(Log, "/rosout", self._on_rosout, ROSOUT_QOS, callback_group=g)
-        for i in range(WHEEL_COUNT):
-            self.create_subscription(WheelStatus, f"/wheel{i}/status",
-                                     lambda m, i=i: self._on_wheel(i, m), 10, callback_group=g)
+        topics = ([f"/wheel{i}/status" for i in range(WHEEL_COUNT)]
+                  + [f"/suction{i}/status" for i in range(SUCTION_COUNT)])
+        for i, topic in enumerate(topics):
+            self.create_subscription(MotorStatus, topic,
+                                     lambda m, i=i: self._on_motor(i, m), 10, callback_group=g)
         for i in range(GRIPPER_COUNT):
             self.create_subscription(GripperState, f"/gripper{i}/state",
                                      lambda m, i=i: self._on_gripper(i, m), 10, callback_group=g)
@@ -130,9 +135,10 @@ class RosIoNode(Node):
             self._pose = (p.position.x, p.position.y, _yaw_of(p.orientation))
             self._vel = (t.linear.x, t.linear.y, t.angular.z)
 
-    def _on_wheel(self, i: int, m):
+    def _on_motor(self, i: int, m):
+        fields = motor_fields(m)
         with self._lock:
-            self._wheels[i] = (float(m.vdc), int(m.mode), self.get_clock().now())
+            self._motors[i] = (fields, self.get_clock().now())
 
     def _on_gripper(self, i: int, m):
         with self._lock:
@@ -431,13 +437,13 @@ class RosIoNode(Node):
         now = self.get_clock().now()
         with self._lock:
             wheels = []
-            for w in self._wheels:
+            for w in self._motors:
                 if w is None:
-                    wheels.append((0.0, False))
+                    wheels.append(motor_entry(None, False))
                     continue
-                vdc, mode, stamp = w
+                fields, stamp = w
                 fresh = (now - stamp).nanoseconds * 1e-9 <= WHEEL_TIMEOUT_S
-                wheels.append((vdc, fresh and mode != WheelStatus.MODE_FAULT))
+                wheels.append(motor_entry(fields, fresh))
             return Snapshot(pose=self._pose, vel=self._vel, wheels=wheels,
                             grippers=list(self._grippers), scan=list(self._scan),
                             path=list(self._path), task_text=self._task_text,

@@ -315,3 +315,30 @@ fn set_pose_rejects_non_finite_values() {
     assert!(call(&c, &mut p, |req| Msg::SetPose { req, x: 1.0, y: 0.5, yaw: 0.0 }).0);
     p.state(1.0, |s| s.pose == Some([1.0, 0.5, 0.0]));
 }
+
+#[test]
+fn state_reports_five_motors_with_current_and_speed() {
+    let (_r, c, mut p) = connect();
+    release(&c, &mut p);
+    let s = p.state(1.0, |_| true);
+    assert_eq!(s.wheels.iter().map(|w| w.name.as_str()).collect::<Vec<_>>(), ["車輪0", "車輪1", "車輪2", "吸引 左", "吸引 右"]);
+    assert!(s.wheels.iter().all(|w| w.ok && w.vdc > 20.0));
+    // Driving: the wheels turn and draw current in proportion to speed.
+    let end = Instant::now() + Duration::from_millis(500);
+    while Instant::now() < end {
+        c.set_control(ControlInput { vx: 0.8, ..Default::default() });
+        std::thread::sleep(Duration::from_millis(30));
+    }
+    let s = p.state(2.0, |s| s.wheels.iter().take(3).any(|w| w.velocity.abs() > 5.0));
+    for w in s.wheels.iter().take(3) {
+        assert!((w.current - 0.06 * w.velocity).abs() < 1e-6, "{w:?}");
+    }
+    // Suction: the right motor draws current while on, the left stays disabled.
+    c.set_control(ControlInput::default());
+    assert!(call(&c, &mut p, |req| Msg::SetSuction { req, gripper: 1, on: true }).0);
+    let s = p.state(2.0, |s| s.wheels[4].current > 1.0);
+    assert_eq!((s.wheels[3].current, s.wheels[3].mode), (0.0, proto::MOTOR_MODE_DISABLED));
+    assert_eq!(s.wheels[4].mode, proto::MOTOR_MODE_VELOCITY);
+    assert!(call(&c, &mut p, |req| Msg::SetSuction { req, gripper: 2, on: false }).0);
+    p.state(2.0, |s| s.wheels[4].current == 0.0);
+}

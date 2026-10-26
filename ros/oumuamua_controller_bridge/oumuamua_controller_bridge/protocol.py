@@ -49,6 +49,18 @@ SHELL_OUTPUT = 61
 SHELL_COMPLETION = 62
 SHELL_CLOSED = 63
 
+# Motors in STATE.wheels: the three wheels, then the two suction motors (mini-shirasu boards).
+WHEEL_COUNT = 3
+SUCTION_COUNT = 2
+MOTOR_NAMES = ["車輪0", "車輪1", "車輪2", "吸引 左", "吸引 右"]
+# mini_shirasu_ros/msg/Status.mode, and "no detail" for a motor never heard from.
+MODE_DISABLED, MODE_CURRENT, MODE_VELOCITY, MODE_POSITION, MODE_FAULT = 0, 1, 2, 3, 4
+MODE_UNKNOWN = 255
+# Bits of the motor entry's flags.
+SATURATED_UPPER = 1
+SATURATED_LOWER = 2
+VDC_LOW = 4
+
 MAX_POINTS_PER_SCAN = 280
 MAX_SHELL_CHUNK = 900
 
@@ -99,3 +111,16 @@ def shell_opened_msgs(tab: str, replay: bytes) -> list:
     for i in range(MAX_SHELL_CHUNK, len(replay), MAX_SHELL_CHUNK):
         msgs.append([SHELL_OUTPUT, tab, replay[i:i + MAX_SHELL_CHUNK]])
     return msgs
+
+
+def motor_row(index: int, m) -> list:
+    """One STATE.wheels entry `[vdc, ok, current, velocity, mode, flags, name]` from a snapshot
+    motor `(vdc, ok[, current, velocity, mode, flags])`. A short tuple (only voltage and ok) gets
+    the "no detail" defaults, mirroring how the phone decodes an older peer."""
+    vdc, ok = float(m[0]), bool(m[1])
+    current = float(m[2]) if len(m) > 2 else 0.0
+    velocity = float(m[3]) if len(m) > 3 else 0.0
+    mode = int(m[4]) if len(m) > 4 else MODE_UNKNOWN
+    flags = int(m[5]) if len(m) > 5 else 0
+    name = MOTOR_NAMES[index] if 0 <= index < len(MOTOR_NAMES) else f"モータ{index}"
+    return [vdc, ok, current, velocity, mode, flags, name]

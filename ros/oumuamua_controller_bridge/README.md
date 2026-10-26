@@ -41,3 +41,4 @@ LiDAR against the outer walls). Its `DEFAULT_CONFIG` mirrors `config/bridge.yaml
 - MoveLift goals and cancel; suction; `/gripper{i}/zero_lift` (assumed to exist; without it the
   phone gets "<name> がありません" after 1 s).
 - `/rosout` lines arrive as LOG messages.
+- Motors: STATE carries five entries, `/wheel{0,1,2}/status` then `/suction{0,1}/status` (`mini_shirasu_ros/msg/Status`), with current, velocity, mode and the saturated / vdc_low flags; a board that stops publishing turns red on the phone after 0.5 s. The suction boards are assumed to be `suction0` = left gripper, `suction1` = right.
