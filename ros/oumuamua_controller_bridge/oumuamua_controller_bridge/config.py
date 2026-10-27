@@ -27,7 +27,7 @@ DEFAULTS = {
         1.5625, -0.30, 2.5025, 0.30,
     ],
     "shelf": [1.5625, -0.30, 2.5025, 0.30],
-    "start_pose": [-2.2, 1.3, 0.0],
+    "start_pose": [-2.2, 1.3, 3.141592653589793],
     "robot_radius": 0.32,
     "completion_setup_files": ["/opt/ros/$ROS_DISTRO/setup.bash"],
 }
