@@ -37,12 +37,12 @@
    ```sh
    ros2 launch oumuamua_controller_bridge bridge.launch.py
    # 設定ファイルを差し替えるとき
-   ros2 launch oumuamua_controller_bridge bridge.launch.py config:=/path/to/bridge.yaml
+   ros2 launch oumuamua_controller_bridge bridge.launch.py config:=/path/to/controller_bridge.yaml
    ```
 
-   launch の引数は `config`(パラメータファイル。省略時はパッケージの `config/bridge.yaml`)だけです。
+   launch の引数は `config`(パラメータファイル。省略時は oumuamua_bringup の `config/controller_bridge.yaml`)だけです。
 
-設定は `ros/oumuamua_controller_bridge/config/bridge.yaml` にあります。リフトの段、速度の段、フィールドの寸法、障害物、棚、開始位置、ロボット半径などで、値は oumuamua の `task_commander.yaml` から写したものです。フィールドやロボットを変えたら、ここを直してください。
+設定は oumuamua の `src/oumuamua_bringup/config/controller_bridge.yaml` にあります (bridge ノードは既定値を持たないので、全部そこに書きます)。リフトの段、速度の段、フィールドの寸法、障害物、棚、開始位置、ロボット半径などで、値は oumuamua の `task_commander.yaml` から写したものです。フィールドやロボットを変えたら、ここを直してください。
 
 ## スマホだけで試す(デモ)
 

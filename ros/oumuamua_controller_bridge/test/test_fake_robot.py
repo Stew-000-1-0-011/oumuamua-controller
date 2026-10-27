@@ -6,7 +6,9 @@ from pathlib import Path
 from oumuamua_controller_bridge.config import DEFAULTS, build_config, parse_simple_yaml
 from oumuamua_controller_bridge.fake_robot import FakeRosIo
 
-BRIDGE_YAML = Path(__file__).resolve().parent.parent / "config" / "bridge.yaml"
+# The bridge's parameter file is in oumuamua_bringup (the bridge has no defaults). When this repository is
+# checked out as oumuamua's src/oumuamua-controller, oumuamua_bringup is next to it.
+BRIDGE_YAML = Path(__file__).resolve().parents[4] / "oumuamua_bringup" / "config" / "controller_bridge.yaml"
 
 
 class Clock:
@@ -103,6 +105,8 @@ def test_fake_suction_and_tracker_and_zero():
 
 
 def test_default_config_matches_bridge_yaml():
+    if not BRIDGE_YAML.exists():
+        pytest.skip(f"{BRIDGE_YAML} not found (not inside the oumuamua workspace)")
     params = parse_simple_yaml(BRIDGE_YAML.read_text(encoding="utf-8"))
     assert build_config(params) == DEFAULTS
 

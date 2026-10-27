@@ -9,9 +9,10 @@ Build together with the oumuamua workspace (depends on `gripper`, `task_commande
 `mini_shirasu_ros`):
 
     colcon build --packages-up-to oumuamua_controller_bridge
-    ros2 launch oumuamua_controller_bridge bridge.launch.py [config:=/path/to/bridge.yaml]
+    ros2 launch oumuamua_controller_bridge bridge.launch.py [config:=/path/to/controller_bridge.yaml]
 
-Parameters are in `config/bridge.yaml` (lists of pairs are flattened because ROS parameters cannot
+Parameters are in oumuamua's `src/oumuamua_bringup/config/controller_bridge.yaml`, which the launch file reads by default;
+the node has no defaults, so every parameter must be in that file (lists of pairs are flattened because ROS parameters cannot
 nest lists; `config.build_config()` rebuilds them). `$ROS_DISTRO` in `completion_setup_files` is
 expanded at start-up.
 
@@ -20,8 +21,8 @@ expanded at start-up.
     python3 -m oumuamua_controller_bridge.fake_robot [--port 47800]
 
 Runs `BridgeServer` on `FakeRosIo` (planar cmd_vel integration, 1 s per task stage, lift 0.05 m/s,
-LiDAR against the outer walls). Its `DEFAULT_CONFIG` mirrors `config/bridge.yaml`;
-`test_fake_robot.py::test_default_config_matches_bridge_yaml` keeps them equal.
+LiDAR against the outer walls). Its `DEFAULT_CONFIG` mirrors `controller_bridge.yaml`;
+`test_fake_robot.py::test_default_config_matches_bridge_yaml` keeps them equal (skipped outside the oumuamua workspace).
 
 ## Tests
 

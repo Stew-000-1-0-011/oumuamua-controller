@@ -4,31 +4,28 @@ from pathlib import Path
 import rclpy
 from rclpy.executors import ExternalShutdownException, MultiThreadedExecutor
 from rclpy.node import Node
-from rclpy.parameter import Parameter
+from rcl_interfaces.msg import ParameterDescriptor
 
-from .config import DEFAULTS, build_config, expand_env
+from .config import build_config, expand_env
 from .ros_io import RosIoNode
 from .server import BridgeServer
 
-def _flat_defaults() -> dict:
-    """Same keys as config/bridge.yaml, defaults from config.DEFAULTS (ROS-free)."""
-    c = DEFAULTS
-    flat = {k: c[k] for k in ("robot_name", "lift_max", "blocks", "columns", "rows",
-                              "field_bounds", "field_obstacles", "shelf", "start_pose",
-                              "robot_radius", "completion_setup_files")}
-    flat["lift_preset_names"] = [n for n, _ in c["lift_presets"]]
-    flat["lift_preset_heights"] = [h for _, h in c["lift_presets"]]
-    flat["speed_levels"] = [v for pair in c["speed_levels"] for v in pair]
-    return flat
-
-
-PARAM_DEFAULTS = _flat_defaults()
+# Keys of the bridge's ROS parameters. There are no defaults: every key must be in the parameter file
+# (oumuamua_bringup/config/controller_bridge.yaml). config.DEFAULTS is only for the fake robot and the tests.
+PARAM_KEYS = ("robot_name", "lift_max", "blocks", "columns", "rows", "field_bounds", "field_obstacles",
+              "shelf", "start_pose", "robot_radius", "completion_setup_files",
+              "lift_preset_names", "lift_preset_heights", "speed_levels")
 
 
 def _read_params(node: Node) -> dict:
-    for key, default in PARAM_DEFAULTS.items():
-        node.declare_parameter(key, default)
-    return {key: node.get_parameter(key).value for key in PARAM_DEFAULTS}
+    any_type = ParameterDescriptor(dynamic_typing=True)
+    for key in PARAM_KEYS:
+        node.declare_parameter(key, None, any_type)
+    params = {key: node.get_parameter(key).value for key in PARAM_KEYS}
+    missing = [key for key, value in params.items() if value is None]
+    if missing:
+        raise RuntimeError("parameters not set (give them in the parameter file): " + ", ".join(missing))
+    return params
 
 
 def main(args=None):
