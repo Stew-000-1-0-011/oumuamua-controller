@@ -11,7 +11,8 @@ Build together with the oumuamua workspace (depends on `gripper`, `task_commande
     colcon build --packages-up-to oumuamua_controller_bridge
     ros2 launch oumuamua_controller_bridge bridge.launch.py [config:=/path/to/controller_bridge.yaml]
 
-Parameters are in oumuamua's `src/oumuamua_bringup/config/controller_bridge.yaml`, which the launch file reads by default;
+Parameters are in oumuamua's `src/oumuamua_bringup/config/`: the field (`field.*`) in `field.yaml`, shared with the other nodes,
+and the rest in `controller_bridge.yaml`; the launch file reads both by default;
 the node has no defaults, so every parameter must be in that file (lists of pairs are flattened because ROS parameters cannot
 nest lists; `config.build_config()` rebuilds them). `$ROS_DISTRO` in `completion_setup_files` is
 expanded at start-up.

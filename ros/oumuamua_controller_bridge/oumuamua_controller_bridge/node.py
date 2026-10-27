@@ -6,15 +6,15 @@ from rclpy.executors import ExternalShutdownException, MultiThreadedExecutor
 from rclpy.node import Node
 from rcl_interfaces.msg import ParameterDescriptor
 
-from .config import build_config, expand_env
+from .config import FIELD_KEYS, build_config, expand_env, from_ros_params
 from .ros_io import RosIoNode
 from .server import BridgeServer
 
-# Keys of the bridge's ROS parameters. There are no defaults: every key must be in the parameter file
-# (oumuamua_bringup/config/controller_bridge.yaml). config.DEFAULTS is only for the fake robot and the tests.
-PARAM_KEYS = ("robot_name", "lift_max", "blocks", "columns", "rows", "field_bounds", "field_obstacles",
-              "shelf", "start_pose", "robot_radius", "completion_setup_files",
-              "lift_preset_names", "lift_preset_heights", "speed_levels")
+# Keys of the bridge's ROS parameters. There are no defaults: every key must be in the parameter files
+# (oumuamua_bringup/config/controller_bridge.yaml and, for field.*, field.yaml).
+# config.DEFAULTS is only for the fake robot and the tests.
+PARAM_KEYS = ("robot_name", "lift_max", "robot_radius", "completion_setup_files",
+              "lift_preset_names", "lift_preset_heights", "speed_levels") + FIELD_KEYS
 
 
 def _read_params(node: Node) -> dict:
@@ -34,7 +34,7 @@ def main(args=None):
     server = None
     executor = MultiThreadedExecutor(num_threads=4)
     try:
-        config = expand_env(build_config(_read_params(io)))
+        config = expand_env(build_config(from_ros_params(_read_params(io))))
         server = BridgeServer(config["robot_name"], io, config,
                               log_root=Path.home() / ".oumuamua_controller" / "console")
         io.notify = server.notify

@@ -3,12 +3,14 @@ import math
 import pytest
 from pathlib import Path
 
-from oumuamua_controller_bridge.config import DEFAULTS, build_config, parse_simple_yaml
+from oumuamua_controller_bridge.config import DEFAULTS, build_config, from_ros_params, parse_simple_yaml
 from oumuamua_controller_bridge.fake_robot import FakeRosIo
 
 # The bridge's parameter file is in oumuamua_bringup (the bridge has no defaults). When this repository is
 # checked out as oumuamua's src/oumuamua-controller, oumuamua_bringup is next to it.
-BRIDGE_YAML = Path(__file__).resolve().parents[4] / "oumuamua_bringup" / "config" / "controller_bridge.yaml"
+BRINGUP_CONFIG = Path(__file__).resolve().parents[4] / "oumuamua_bringup" / "config"
+BRIDGE_YAML = BRINGUP_CONFIG / "controller_bridge.yaml"
+FIELD_YAML = BRINGUP_CONFIG / "field.yaml"
 
 
 class Clock:
@@ -108,7 +110,9 @@ def test_default_config_matches_bridge_yaml():
     if not BRIDGE_YAML.exists():
         pytest.skip(f"{BRIDGE_YAML} not found (not inside the oumuamua workspace)")
     params = parse_simple_yaml(BRIDGE_YAML.read_text(encoding="utf-8"))
-    assert build_config(params) == DEFAULTS
+    # field.yaml nests its keys under field:, which parse_simple_yaml flattens away
+    params |= {"field." + k: v for k, v in parse_simple_yaml(FIELD_YAML.read_text(encoding="utf-8")).items()}
+    assert build_config(from_ros_params(params)) == DEFAULTS
 
 
 def test_fake_path_run_finishes_after_a_few_seconds():

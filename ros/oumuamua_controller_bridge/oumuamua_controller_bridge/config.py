@@ -33,6 +33,25 @@ DEFAULTS = {
 }
 
 
+# The field's parameters (oumuamua_bringup/config/field.yaml, shared with the other nodes) that the bridge reads.
+FIELD_KEYS = ("field.bounds", "field.walls", "field.shelf", "field.notes_x", "field.shelf_columns_x",
+              "field.shelf_rows", "field.start_pose")
+
+
+def from_ros_params(p: dict) -> dict:
+    """ROS parameters (the bridge's own keys plus FIELD_KEYS) -> the flat keys build_config() takes.
+    The obstacles shown are the walls and the shelf; the counts come from the field's lists."""
+    out = {k: v for k, v in p.items() if not k.startswith("field.")}
+    out["field_bounds"] = list(p["field.bounds"])
+    out["field_obstacles"] = list(p["field.walls"]) + list(p["field.shelf"])
+    out["shelf"] = list(p["field.shelf"])
+    out["start_pose"] = list(p["field.start_pose"])
+    out["blocks"] = len(p["field.notes_x"])
+    out["columns"] = len(p["field.shelf_columns_x"])
+    out["rows"] = int(p["field.shelf_rows"])
+    return out
+
+
 def build_config(p: dict) -> dict:
     names, heights = list(p["lift_preset_names"]), list(p["lift_preset_heights"])
     sp = [float(v) for v in p["speed_levels"]]
