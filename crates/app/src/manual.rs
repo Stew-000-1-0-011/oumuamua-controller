@@ -92,8 +92,10 @@ pub fn task_kind_name(kind: u8) -> &'static str {
         2 => "スタートへ",
         3 => "スラローム往路",
         4 => "スラローム復路",
-        5 => "配置",
+        5 => "マスへ",
         6 => "スラローム出口へ",
+        7 => "棚の前へ",
+        8 => "2 個同時に回収",
         _ => "作業",
     }
 }
@@ -311,8 +313,11 @@ mod tests {
 
     #[test]
     fn auto_label_prefers_task_then_path() {
-        let t = TaskState { kind: 5, step: "差し込み".into(), args: [0; 4] };
-        assert_eq!(auto_label(Some(&t), None), "配置: 差し込み");
+        let t = TaskState { kind: 5, step: "マスへ移動".into(), args: [0; 4] };
+        assert_eq!(auto_label(Some(&t), None), "マスへ: マスへ移動");
+        let t = TaskState { kind: 7, step: String::new(), args: [0; 4] };
+        assert_eq!(auto_label(Some(&t), None), "棚の前へ");
+        assert_eq!(task_kind_name(8), "2 個同時に回収");
         assert_eq!(auto_label(None, Some(&("slalom_forward".into(), true))), "経路 slalom_forward");
         assert_eq!(auto_label(None, None), "");
     }

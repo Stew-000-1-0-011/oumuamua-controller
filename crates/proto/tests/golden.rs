@@ -62,3 +62,68 @@ fn integers_accept_any_width() {
 fn points_convert_to_meters() {
     assert_eq!(proto::points_to_m(&[(1500, -250)]), vec![(1.5, -0.25)]);
 }
+
+fn field_items(bytes: &[u8]) -> Vec<rmpv::Value> {
+    let v = rmpv::decode::read_value(&mut &bytes[..]).unwrap();
+    let rmpv::Value::Array(rel) = v else { panic!() };
+    let rmpv::Value::Array(msg) = rel[3].clone() else { panic!() };
+    msg
+}
+
+fn encode_field(items: Vec<rmpv::Value>) -> Datagram {
+    let mut rel = rmpv::decode::read_value(&mut &read("rel_field")[..]).unwrap();
+    let rmpv::Value::Array(a) = &mut rel else { panic!() };
+    a[3] = rmpv::Value::Array(items);
+    let mut bytes = Vec::new();
+    rmpv::encode::write_value(&mut bytes, &rel).unwrap();
+    Datagram::decode(&bytes).unwrap()
+}
+
+fn field_of(d: Datagram) -> proto::Msg {
+    let Datagram::Rel { msg, .. } = d else { panic!() };
+    msg
+}
+
+#[test]
+fn field_from_an_older_bridge_has_no_footprint_and_falls_back_to_the_circle() {
+    // [52, bounds, obstacles, shelf, start, robot_radius]: the layout before the footprint was added.
+    let mut items = field_items(&read("rel_field"));
+    assert_eq!(items.len(), 8, "the golden FIELD carries footprint and suction");
+    items.truncate(6);
+    let proto::Msg::Field { robot_radius, footprint, suction, .. } = field_of(encode_field(items.clone())) else { panic!() };
+    assert_eq!(robot_radius, 0.375);
+    assert!(footprint.is_empty() && suction.is_empty());
+    // nil is the same as absent.
+    items.extend([rmpv::Value::Nil, rmpv::Value::Nil]);
+    let proto::Msg::Field { footprint, suction, .. } = field_of(encode_field(items)) else { panic!() };
+    assert!(footprint.is_empty() && suction.is_empty());
+}
+
+#[test]
+fn field_with_a_footprint_roundtrips_and_extra_fields_after_it_are_ignored() {
+    let proto::Msg::Field { footprint, suction, .. } = field_of(Datagram::decode(&read("rel_field")).unwrap()) else { panic!() };
+    assert_eq!(footprint.len(), 4);
+    assert_eq!(suction, vec![(0.25, 0.125), (0.25, -0.125)]);
+    let mut items = field_items(&read("rel_field"));
+    items.push(rmpv::Value::from("future"));
+    let proto::Msg::Field { footprint: f2, .. } = field_of(encode_field(items)) else { panic!() };
+    assert_eq!(f2, footprint);
+}
+
+#[test]
+fn a_wrongly_typed_footprint_is_an_error() {
+    let mut items = field_items(&read("rel_field"));
+    items[6] = rmpv::Value::from("not a list");
+    let mut rel = rmpv::decode::read_value(&mut &read("rel_field")[..]).unwrap();
+    let rmpv::Value::Array(a) = &mut rel else { panic!() };
+    a[3] = rmpv::Value::Array(items);
+    let mut bytes = Vec::new();
+    rmpv::encode::write_value(&mut bytes, &rel).unwrap();
+    assert!(Datagram::decode(&bytes).is_err());
+}
+
+#[test]
+fn task_memory_keeps_the_placed_field_on_the_wire() {
+    let proto::Msg::TaskMemory { placed, .. } = field_of(Datagram::decode(&read("rel_task_memory")).unwrap()) else { panic!() };
+    assert_eq!(placed, vec![(1, 2), (0, 0)], "still decoded; the phone ignores it");
+}

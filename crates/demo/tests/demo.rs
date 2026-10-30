@@ -81,9 +81,13 @@ fn connect_delivers_config_field_and_starts_stopped() {
         _ => None,
     });
     assert!(!paths.is_empty());
-    p.msg(2.0, |m| matches!(m, Msg::Field { .. }).then_some(()));
+    let (footprint, suction) = p.msg(2.0, |m| match m {
+        Msg::Field { footprint, suction, .. } => Some((footprint.clone(), suction.clone())),
+        _ => None,
+    });
+    assert_eq!((footprint.len(), suction.len()), (16, 2), "the robot's outline and suction centres are sent");
     p.msg(2.0, |m| matches!(m, Msg::PathShape { points, .. } if points.is_empty()).then_some(()));
-    p.msg(2.0, |m| matches!(m, Msg::TaskMemory { .. }).then_some(()));
+    p.msg(2.0, |m| matches!(m, Msg::TaskMemory { placed, .. } if placed.is_empty()).then_some(()));
     let s = p.state(2.0, |_| true);
     assert_eq!((s.mode, s.stop_reason.as_str()), (Mode::Stopped, "link lost"));
     // SCAN at 10 Hz: 360 rays arrive reassembled.
@@ -342,4 +346,56 @@ fn state_reports_five_motors_with_current_and_speed() {
     assert_eq!(s.wheels[4].mode, proto::MOTOR_MODE_VELOCITY);
     assert!(call(&c, &mut p, |req| Msg::SetSuction { req, gripper: 2, on: false }).0);
     p.state(2.0, |s| s.wheels[4].current == 0.0);
+}
+
+fn run_to_done(c: &Client, p: &mut Probe, kind: u8, gripper: i32, block: i32, column: i32) -> Vec<String> {
+    let (ok, msg) = call(c, p, |req| Msg::RunTask { req, kind, gripper, block, column, row: 0 });
+    assert!(ok, "{msg}");
+    let mut steps = Vec::new();
+    let end = Instant::now() + Duration::from_secs(8);
+    loop {
+        let s = p.state(2.0, |_| true);
+        if let Some(t) = &s.task && steps.last() != Some(&t.step) {
+            steps.push(t.step.clone());
+        }
+        if s.task.is_none() && !steps.is_empty() {
+            return steps;
+        }
+        assert!(Instant::now() < end, "task {kind} never ended");
+    }
+}
+
+fn memory(p: &mut Probe, pick: impl Fn(&[bool; 2], &Vec<u8>) -> bool) -> ([bool; 2], Vec<u8>) {
+    p.msg(3.0, |m| match m {
+        Msg::TaskMemory { holding, picked, .. } if pick(holding, picked) => Some((*holding, picked.clone())),
+        _ => None,
+    })
+}
+
+#[test]
+fn shelf_tasks_only_move_and_pick_pair_holds_both() {
+    let (_r, c, mut p) = connect();
+    release(&c, &mut p);
+    // PICK_PAIR 4: both held, blocks 4 and 3 gone.
+    assert_eq!(run_to_done(&c, &mut p, 8, 0, 4, 0)[0], "ブロックへ移動");
+    assert_eq!(memory(&mut p, |h, b| h == &[true, true] && b.len() == 2), ([true, true], vec![4, 3]));
+    // TO_SHELF_FRONT (7) and TO_SHELF_CELL (5) are one step each and change nothing held.
+    assert_eq!(run_to_done(&c, &mut p, 7, 0, 0, 0), ["棚の前へ移動"]);
+    assert_eq!(run_to_done(&c, &mut p, 5, 1, 0, 2), ["マスへ移動"]);
+    p.msg(2.0, |m| matches!(m, Msg::TaskDone { kind: 5, ok: true, .. }).then_some(()));
+    // A pair without a pose is refused.
+    let (ok, msg) = call(&c, &mut p, |req| Msg::RunTask { req, kind: 8, gripper: 0, block: 3, column: 0, row: 0 });
+    assert!(!ok && msg.contains("no pose"), "{msg}");
+}
+
+#[test]
+fn releasing_suction_clears_the_held_state() {
+    let (_r, c, mut p) = connect();
+    release(&c, &mut p);
+    run_to_done(&c, &mut p, 8, 0, 2, 0);
+    memory(&mut p, |h, _| h == &[true, true]);
+    assert_eq!(call(&c, &mut p, |req| Msg::SetSuction { req, gripper: 0, on: false }), (true, String::new()));
+    assert_eq!(memory(&mut p, |h, _| h == &[false, true]).1, vec![2, 1], "picked stays");
+    assert_eq!(call(&c, &mut p, |req| Msg::SetSuction { req, gripper: 2, on: false }), (true, String::new()));
+    memory(&mut p, |h, _| h == &[false, false]);
 }

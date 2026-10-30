@@ -244,6 +244,8 @@ impl Server {
                 shelf: sim::SHELF,
                 start: sim::START,
                 robot_radius: sim::ROBOT_RADIUS,
+                footprint: sim::FOOTPRINT.to_vec(),
+                suction: sim::SUCTION_OFFSETS.to_vec(),
             },
             self.path_shape_msg(),
             self.memory_msg(),
@@ -263,7 +265,7 @@ impl Server {
 
     fn memory_msg(&self) -> Msg {
         let m = self.sim.memory();
-        Msg::TaskMemory { holding: m.holding, picked: m.picked.clone(), placed: m.placed.clone() }
+        Msg::TaskMemory { holding: m.holding, picked: m.picked.clone(), placed: Vec::new() }
     }
 
     // ------------------------------------------------------- stop / control
@@ -316,7 +318,7 @@ impl Server {
         for g in 0..2 {
             let ev = self.sim.lift_cancel(g);
             self.events(ev);
-            self.sim.suction[g] = false;
+            self.sim.set_suction(g, false);
         }
     }
 
@@ -408,7 +410,7 @@ impl Server {
                         return;
                     }
                     for g in gs {
-                        self.sim.suction[g] = on;
+                        self.sim.set_suction(g, on);
                     }
                     self.reply(req, true, "");
                 }
@@ -445,9 +447,13 @@ impl Server {
                 if self.sim.busy() {
                     self.reply(req, false, "busy");
                 } else if !self.refuse_if_stopped(req) {
-                    self.enter_auto();
-                    self.sim.start_task(kind, [gripper, block, column, row]);
-                    self.reply(req, true, "");
+                    match self.sim.start_task(kind, [gripper, block, column, row]) {
+                        Ok(()) => {
+                            self.enter_auto();
+                            self.reply(req, true, "");
+                        }
+                        Err(e) => self.reply(req, false, e),
+                    }
                 }
             }
             Msg::Cancel { req } => {

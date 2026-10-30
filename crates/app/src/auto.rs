@@ -13,12 +13,17 @@ pub enum TaskKind {
     ToStart = 2,
     SlalomForward = 3,
     SlalomBackward = 4,
-    Place = 5,
+    ToShelfCell = 5,
     ToSlalomExit = 6,
+    ToShelfFront = 7,
+    PickPair = 8,
 }
 
+/// The `PICK_PAIR` blocks that have a pose in task_commander.yaml (`pick.pairs`): 4 (4 and 3), 2 (2 and 1).
+pub const PAIR_BLOCKS: [u8; 2] = [4, 2];
+
 /// Defaults until CONFIG arrives (protocol.md).
-pub const DEFAULT_BLOCKS: u8 = 6;
+pub const DEFAULT_BLOCKS: u8 = 5;
 pub const DEFAULT_COLUMNS: u8 = 3;
 pub const DEFAULT_ROWS: u8 = 3;
 
@@ -31,27 +36,20 @@ pub fn gripper_name(g: i32) -> &'static str {
     }
 }
 
-/// "回収 左 ブロック 2", "配置 右 列 1 段 0", "スタートへ". `args` is `[gripper, block, column, row]`.
+/// "回収 左 ブロック 2", "マスへ 右 列 1", "スタートへ". `args` is `[gripper, block, column, row]`
+/// (the row is not used by any task).
 pub fn task_label(kind: u8, args: [i32; 4]) -> String {
     match kind {
         0 => format!("回収 {} ブロック {}", gripper_name(args[0]), args[1]),
-        5 => format!("配置 {} 列 {} 段 {}", gripper_name(args[0]), args[2], args[3]),
+        5 => format!("マスへ {} 列 {}", gripper_name(args[0]), args[2]),
+        7 => "棚の前へ".to_owned(),
+        8 => format!("2 個同時に回収 {}+{}", args[1], args[1] - 1),
         1 => "スラロームの入口へ".to_owned(),
         2 => "スタートへ".to_owned(),
         3 => "スラローム往路".to_owned(),
         4 => "スラローム復路".to_owned(),
         6 => "スラロームの出口へ".to_owned(),
         _ => "作業".to_owned(),
-    }
-}
-
-/// A warning (never a block) when a block would go on a shelf cell whose lower neighbour this
-/// controller has not filled.
-pub fn place_warning(memory: &TaskMemory, column: u8, row: u8) -> Option<String> {
-    if row >= 1 && !memory.placed.contains(&(column, row - 1)) {
-        Some("下の段にまだ置いていません".to_owned())
-    } else {
-        None
     }
 }
 
@@ -65,8 +63,8 @@ pub fn holding_gripper(memory: &TaskMemory) -> Vec<u8> {
     (0u8..2).filter(|&i| memory.holding[usize::from(i)]).collect()
 }
 
-/// The gripper PLACE should use: `current` if it holds, else the first that does.
-pub fn place_gripper(memory: &TaskMemory, current: u8) -> Option<u8> {
+/// The gripper TO_SHELF_CELL should use: `current` if it holds, else the first that does.
+pub fn shelf_gripper(memory: &TaskMemory, current: u8) -> Option<u8> {
     let h = holding_gripper(memory);
     if h.contains(&current) { Some(current) } else { h.first().copied() }
 }
@@ -95,7 +93,12 @@ pub fn task_block_reason(mode: Option<Mode>, task: Option<&TaskState>) -> Option
     }
 }
 
-/// "持っている 左 / 回収済み 0, 2 / 置いた 列0 段0, …".
+/// A pair can be picked when `block` is one with a pair pose, `block - 1` exists, and neither is picked.
+pub fn can_pick_pair(memory: &TaskMemory, block: u8, count: u8) -> bool {
+    PAIR_BLOCKS.contains(&block) && block < count && can_pick(memory, block) && can_pick(memory, block - 1)
+}
+
+/// "持っている: 左\n回収済み: 0, 2".
 pub fn memory_text(memory: &TaskMemory) -> String {
     let holding = holding_gripper(memory);
     let holding = if holding.is_empty() {
@@ -108,12 +111,7 @@ pub fn memory_text(memory: &TaskMemory) -> String {
     } else {
         memory.picked.iter().map(u8::to_string).collect::<Vec<_>>().join(", ")
     };
-    let placed = if memory.placed.is_empty() {
-        "なし".to_owned()
-    } else {
-        memory.placed.iter().map(|(c, r)| format!("列{c} 段{r}")).collect::<Vec<_>>().join(", ")
-    };
-    format!("持っている: {holding}\n回収済み: {picked}\n置いた: {placed}")
+    format!("持っている: {holding}\n回収済み: {picked}")
 }
 
 /// The bottom line for a finished task.
@@ -135,14 +133,23 @@ pub fn pose_text(x: f64, y: f64, yaw: f64) -> String {
 mod tests {
     use super::*;
 
-    fn mem(holding: [bool; 2], picked: &[u8], placed: &[(u8, u8)]) -> TaskMemory {
-        TaskMemory { holding, picked: picked.to_vec(), placed: placed.to_vec() }
+    fn mem(holding: [bool; 2], picked: &[u8]) -> TaskMemory {
+        TaskMemory { holding, picked: picked.to_vec() }
     }
 
     #[test]
     fn labels() {
         assert_eq!(task_label(TaskKind::Pick as u8, [0, 2, 0, 0]), "回収 左 ブロック 2");
-        assert_eq!(task_label(TaskKind::Place as u8, [1, 0, 1, 0]), "配置 右 列 1 段 0");
+        assert_eq!(task_label(TaskKind::ToShelfCell as u8, [1, 0, 1, 0]), "マスへ 右 列 1");
+        assert_eq!(task_label(TaskKind::ToShelfCell as u8, [0, 0, 2, 2]), "マスへ 左 列 2", "the row is not shown");
+        assert_eq!(task_label(TaskKind::ToShelfFront as u8, [0; 4]), "棚の前へ");
+        assert_eq!(task_label(TaskKind::PickPair as u8, [0, 4, 0, 0]), "2 個同時に回収 4+3");
+        assert_eq!(task_label(TaskKind::PickPair as u8, [0, 2, 0, 0]), "2 個同時に回収 2+1");
+        assert_eq!(
+            [TaskKind::ToShelfCell as u8, TaskKind::ToShelfFront as u8, TaskKind::PickPair as u8],
+            [5, 7, 8],
+            "RunTask.action numbers"
+        );
         assert_eq!(task_label(TaskKind::ToStart as u8, [0; 4]), "スタートへ");
         assert_eq!(task_label(TaskKind::ToSlalomEntrance as u8, [0; 4]), "スラロームの入口へ");
         assert_eq!(task_label(TaskKind::ToSlalomExit as u8, [0; 4]), "スラロームの出口へ");
@@ -152,17 +159,19 @@ mod tests {
     }
 
     #[test]
-    fn place_warning_rules() {
-        let m = mem([true, false], &[], &[(1, 0)]);
-        assert_eq!(place_warning(&m, 0, 0), None, "bottom row never warns");
-        assert_eq!(place_warning(&m, 1, 1), None, "own block below");
-        assert_eq!(place_warning(&m, 0, 1).as_deref(), Some("下の段にまだ置いていません"));
-        assert!(place_warning(&m, 1, 2).is_some(), "row 1 of that column is empty");
+    fn pairs_need_a_pair_pose_and_both_blocks_free() {
+        let free = mem([false, false], &[]);
+        assert!(can_pick_pair(&free, 4, 5) && can_pick_pair(&free, 2, 5));
+        assert!(!can_pick_pair(&free, 3, 5), "no pose for 3+2");
+        assert!(!can_pick_pair(&free, 4, 4), "block 4 does not exist");
+        assert!(!can_pick_pair(&mem([false, false], &[3]), 4, 5), "3 is gone");
+        assert!(!can_pick_pair(&mem([false, false], &[4]), 4, 5), "4 is gone");
+        assert!(can_pick_pair(&mem([false, false], &[3]), 2, 5), "the other pair is unaffected");
     }
 
     #[test]
     fn can_pick_excludes_picked() {
-        let m = mem([false, false], &[1, 4], &[]);
+        let m = mem([false, false], &[1, 4]);
         assert!(can_pick(&m, 0));
         assert!(!can_pick(&m, 1));
         assert!(!can_pick(&m, 4));
@@ -171,18 +180,18 @@ mod tests {
 
     #[test]
     fn holding_grippers() {
-        assert_eq!(holding_gripper(&mem([false, false], &[], &[])), Vec::<u8>::new());
-        assert_eq!(holding_gripper(&mem([true, false], &[], &[])), vec![0]);
-        assert_eq!(holding_gripper(&mem([false, true], &[], &[])), vec![1]);
-        assert_eq!(holding_gripper(&mem([true, true], &[], &[])), vec![0, 1]);
+        assert_eq!(holding_gripper(&mem([false, false], &[])), Vec::<u8>::new());
+        assert_eq!(holding_gripper(&mem([true, false], &[])), vec![0]);
+        assert_eq!(holding_gripper(&mem([false, true], &[])), vec![1]);
+        assert_eq!(holding_gripper(&mem([true, true], &[])), vec![0, 1]);
     }
 
     #[test]
-    fn place_gripper_defaults_to_a_holding_one() {
-        assert_eq!(place_gripper(&mem([false, false], &[], &[]), 0), None);
-        assert_eq!(place_gripper(&mem([false, true], &[], &[]), 0), Some(1));
-        assert_eq!(place_gripper(&mem([true, true], &[], &[]), 1), Some(1));
-        assert_eq!(place_gripper(&mem([true, false], &[], &[]), 0), Some(0));
+    fn shelf_gripper_defaults_to_a_holding_one() {
+        assert_eq!(shelf_gripper(&mem([false, false], &[]), 0), None);
+        assert_eq!(shelf_gripper(&mem([false, true], &[]), 0), Some(1));
+        assert_eq!(shelf_gripper(&mem([true, true], &[]), 1), Some(1));
+        assert_eq!(shelf_gripper(&mem([true, false], &[]), 0), Some(0));
     }
 
     #[test]
@@ -207,8 +216,8 @@ mod tests {
 
     #[test]
     fn texts() {
-        let m = mem([true, false], &[0, 2], &[(1, 0)]);
-        assert_eq!(memory_text(&m), "持っている: 左\n回収済み: 0, 2\n置いた: 列1 段0");
+        let m = mem([true, false], &[0, 2]);
+        assert_eq!(memory_text(&m), "持っている: 左\n回収済み: 0, 2");
         assert!(memory_text(&TaskMemory::default()).contains("持っている: なし"));
         assert_eq!(done_text("スタートへ", true, ""), "スタートへ: 成功");
         assert_eq!(done_text("回収 左 ブロック 1", false, "no block"), "回収 左 ブロック 1: 失敗 (no block)");

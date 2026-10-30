@@ -75,7 +75,7 @@ Rust (`crates/proto`) と Python (`ros/oumuamua_controller_bridge/oumuamua_contr
 | 11 | SET_SUCTION | `[11, req, gripper: u8, on: bool]` | gripper: 0 = 左、1 = 右、2 = 両方 |
 | 12 | LIFT_TO | `[12, req, gripper: u8, height: f64]` | `~/move_lift`。gripper は 11 と同じ |
 | 13 | LIFT_ZERO | `[13, req, gripper: u8]` | `~/zero_lift` |
-| 14 | RUN_TASK | `[14, req, kind: u8, gripper: i32, block: i32, column: i32, row: i32]` | task_commander `~/run`。自動へ |
+| 14 | RUN_TASK | `[14, req, kind: u8, gripper: i32, block: i32, column: i32, row: i32]` | task_commander `~/run`。自動へ。kind と使う引数は下の「作業の種類」 |
 | 15 | CANCEL | `[15, req]` | 作業を取り消し、経路を止め、追従を切って手動へ(ポップアップの「手動制御へ」も同じ) |
 | 16 | START_PATH | `[16, req, name: str]` | 追従を入れて、`/path_follower/follow` アクション(`path_follower/action/FollowPath`、`route` = name、ほかは空 / 0)で経路を走る。ゴールが受け付けられたら自動へ(RESULT は受け付けの時点)。経路が終わる(成功・失敗・取り消し)と、追従を切って手動へ戻る。経路の名前の一覧は `/path_follower/start/*` のサービスから取る |
 | 17 | SET_TRACKER | `[17, req, on: bool]` | `/tracker_node/enable` |
@@ -88,15 +88,31 @@ Rust (`crates/proto`) と Python (`ros/oumuamua_controller_bridge/oumuamua_contr
 | 33 | SHELL_CLOSE | `[33, req, tab: str]` | bash を終わらせる |
 | 34 | SHELL_RENAME | `[34, req, tab: str, new_name: str]` | 名前を変える(記録のフォルダも新しい名前で続ける) |
 
+作業の種類(RunTask.action の `type`。使わない引数は 0):
+
+| kind | 作業 | 引数 | 内容 |
+| --- | --- | --- | --- |
+| 0 | PICK | gripper, block | 把持機構 gripper でブロック block を回収する |
+| 1 | TO_SLALOM_ENTRANCE | なし | スラロームの入口へ |
+| 2 | TO_START | なし | スタート地点へ |
+| 3 | SLALOM_FORWARD | なし | スラロームの往路 |
+| 4 | SLALOM_BACKWARD | なし | スラロームの復路 |
+| 5 | TO_SHELF_CELL(旧 PLACE) | gripper, column | gripper の吸ったノーツが列 column のマスに入る位置と向きへ動く。昇降と吸引は変えない。`row` は送っても使われない(スマホは 0 を送る) |
+| 6 | TO_SLALOM_EXIT | なし | スラロームの出口へ |
+| 7 | TO_SHELF_FRONT | なし | 昇降を運搬の高さにして、棚の前で棚の方を向く |
+| 8 | PICK_PAIR | block | gripper0 でブロック block、gripper1 でブロック block - 1 を同時に回収する。今は block = 4(4 と 3)と 2(2 と 1)だけ(スマホは gripper に 0 を送る) |
+
+棚に置くのは手で行う: 7 で棚の前へ、LIFT_TO で段の高さへ、5 でマスへ差し込み、SET_SUCTION で吸引を切る。task_commander は、持っている把持機構の吸引が切れると「持っていない」に戻す(`holding` は TASK_MEMORY と同じ)。TASK_RESET の返答は "forgot picked blocks and held blocks"。
+
 ### 4.2 橋渡しノード → スマホ
 
 | 番号 | 名前 | 中身 |
 | --- | --- | --- |
 | 50 | RESULT | `[50, req: u32, ok: bool, message: str]` |
 | 51 | CONFIG | `[51, robot_name: str, paths: [str], lift_presets: [[name: str, height: f64]], lift_max: f64, speed_levels: [[v: f64, w: f64] x3], blocks: u8, columns: u8, rows: u8]` |
-| 52 | FIELD | `[52, bounds: [xmin, ymin, xmax, ymax], obstacles: [[xmin, ymin, xmax, ymax]], shelf: [xmin, ymin, xmax, ymax], start: [x, y, yaw], robot_radius: f64]`(外周と障害物は箱。1200 バイトに収まるよう、辺ではなく箱で送る) |
+| 52 | FIELD | `[52, bounds: [xmin, ymin, xmax, ymax], obstacles: [[xmin, ymin, xmax, ymax]], shelf: [xmin, ymin, xmax, ymax], start: [x, y, yaw], robot_radius: f64, footprint: [[x, y]], suction: [[x, y]]]`(外周と障害物は箱。1200 バイトに収まるよう、辺ではなく箱で送る。`footprint` は機体の外形の多角形、`suction` は吸着面の中心(gripper0 = 左が先)で、どちらも機体座標系(x 前・y 左)。6 番目までしか持たない相手や、`footprint` が空・nil の場合、スマホは `robot_radius` の円で描く。受け手は後ろに足された項目を無視する) |
 | 53 | PATH_SHAPE | `[53, name: str, points: bin]`(SCAN と同じ点の並び。経路が変わるたび。消えたら空。280 点を超える経路は、始点と終点を残して全体から等間隔に間引く) |
-| 54 | TASK_MEMORY | `[54, holding: [bool, bool], picked: [u8], placed: [[column: u8, row: u8]]]` |
+| 54 | TASK_MEMORY | `[54, holding: [bool, bool], picked: [u8], placed: [[column: u8, row: u8]]]`(task_commander は置いたマスを覚えなくなったので、橋渡しノードは `placed` を常に空で送り、スマホは来ても無視する。項目は古い相手との互換のために残す) |
 | 55 | TASK_DONE | `[55, kind: u8, ok: bool, message: str]` |
 | 56 | LOG | `[56, stamp_ms: u64, level: u8, name: str, text: str]`(エポックからの ms) |
 | 60 | SHELL_OPENED | `[60, tab: str, replay: bin]`(タブの直近の出力。スマホはタブの中身をこれで置き換える) |

@@ -43,13 +43,9 @@ export component AutoPanel inherits Rectangle {
     in property <string> task-step;
     // 0 free, 1 picked.
     in property <[int]> blocks;
-    // Shelf cells, index row * columns + column; 0 empty, 1 placed.
-    in property <[int]> cells;
     in property <int> columns: 3;
-    in property <int> rows: 3;
     in property <bool> hold-left: false;
     in property <bool> hold-right: false;
-    in property <string> place-warning;
     in property <string> memory-text;
     in property <bool> forget-enabled: true;
     in property <[string]> paths;
@@ -64,11 +60,12 @@ export component AutoPanel inherits Rectangle {
     in-out property <int> place-gripper: 0;
     in-out property <int> sel-block: -1;
     in-out property <int> sel-column: -1;
-    in-out property <int> sel-row: -1;
-
 
     callback run-pick(int, int);
-    callback run-place(int, int, int);
+    // マスへ (TO_SHELF_CELL): gripper, column.
+    callback run-shelf-cell(int, int);
+    // 2 個同時に回収 (PICK_PAIR): the block that gripper0 takes (gripper1 takes block - 1).
+    callback run-pair(int);
     callback run-move(int);
     callback cancel();
     callback forget-pressed();
@@ -82,7 +79,10 @@ export component AutoPanel inherits Rectangle {
     property <bool> usable: root.block-reason == "" && root.link-ok;
     property <bool> can-pick: root.usable && root.sel-block >= 0 && root.sel-block < root.blocks.length && root.blocks[root.sel-block] == 0;
     property <bool> holds-selected: root.place-gripper == 0 ? root.hold-left : root.hold-right;
-    property <bool> can-place: root.usable && root.holds-selected && root.sel-column >= 0 && root.sel-row >= 0;
+    property <bool> can-shelf-cell: root.usable && root.holds-selected && root.sel-column >= 0 && root.sel-column < root.columns;
+    // A pair is free when both of its blocks exist and are not picked (an index past the end reads as 0).
+    property <bool> can-pair-43: root.usable && root.blocks.length > 4 && root.blocks[4] == 0 && root.blocks[3] == 0;
+    property <bool> can-pair-21: root.usable && root.blocks.length > 2 && root.blocks[2] == 0 && root.blocks[1] == 0;
 
     changed visible => { if !root.visible { root.forget-armed = false; } }
     changed forget-enabled => { if !root.forget-enabled { root.forget-armed = false; } }
@@ -215,27 +215,23 @@ export component AutoPanel inherits Rectangle {
         }
     }
 
-    // 配置 (right)
+    // マスへ (right): the held block goes to the position and heading of a shelf column. The lift and the
+    // suction stay as they are; the lift is set and the suction released by hand.
     Panel {
         x: root.width - root.margin - self.width;
         y: root.top-y;
         width: root.side-w;
-        height: 212px;
-        title: "配置 (列-段)";
-        note: !root.hold-left && !root.hold-right ? "ブロックなし" : root.place-warning;
-        for r in root.rows: HorizontalLayout {
+        height: 120px;
+        title: "マスへ (列)";
+        note: !root.hold-left && !root.hold-right ? "ブロックなし" : "";
+        HorizontalLayout {
             height: root.row-h;
             spacing: 4px;
-            property <int> rr: root.rows - 1 - r;
-            Text { text: "段\{rr}"; color: Theme.dim; font-size: 12px; width: 26px; vertical-alignment: center; }
             for c in root.columns: Btn {
-                property <bool> placed: root.cells[parent.rr * root.columns + c] == 1;
-                label: placed ? "済 \{c}-\{parent.rr}" : "\{c}-\{parent.rr}";
-                tint: placed ? Theme.ok : Theme.accent;
-                active: placed || (root.sel-column == c && root.sel-row == parent.rr);
-                font: 14px;
+                label: "列 \{c}";
+                active: root.sel-column == c;
                 min-width: 52px;
-                clicked => { root.sel-column = c; root.sel-row = parent.rr; }
+                clicked => { root.sel-column = c; }
             }
         }
         HorizontalLayout {
@@ -243,12 +239,27 @@ export component AutoPanel inherits Rectangle {
             spacing: 8px;
             SidePick { value <=> root.place-gripper; left-ok: root.hold-left; right-ok: root.hold-right; }
             Btn {
-                label: "配置";
+                label: "マスへ";
                 tint: Theme.ok;
-                active: root.can-place;
-                enabled: root.can-place;
-                clicked => { root.run-place(root.place-gripper, root.sel-column, root.sel-row); }
+                active: root.can-shelf-cell;
+                enabled: root.can-shelf-cell;
+                clicked => { root.run-shelf-cell(root.place-gripper, root.sel-column); }
             }
+        }
+    }
+
+    // 2 個同時に回収: gripper0 (左) takes the first block, gripper1 (右) the one below it.
+    Panel {
+        x: root.width - root.margin - self.width;
+        y: root.top-y + 124px;
+        width: root.side-w;
+        height: 72px;
+        title: "2 個同時に回収 (左+右)";
+        HorizontalLayout {
+            height: root.row-h;
+            spacing: 8px;
+            Btn { label: "4+3"; tint: Theme.ok; active: root.can-pair-43; enabled: root.can-pair-43; clicked => { root.run-pair(4); } }
+            Btn { label: "2+1"; tint: Theme.ok; active: root.can-pair-21; enabled: root.can-pair-21; clicked => { root.run-pair(2); } }
         }
     }
 
@@ -262,6 +273,7 @@ export component AutoPanel inherits Rectangle {
         HorizontalLayout {
             spacing: 4px;
             Btn { label: "スタートへ"; enabled: root.usable; font: 13px; min-width: 70px; clicked => { root.run-move(2); } }
+            Btn { label: "棚の前へ"; enabled: root.usable; font: 13px; min-width: 70px; clicked => { root.run-move(7); } }
             Btn { label: "スラロームの入口へ"; enabled: root.usable; font: 13px; min-width: 70px; clicked => { root.run-move(1); } }
             Btn { label: "スラロームの出口へ"; enabled: root.usable; font: 13px; min-width: 70px; clicked => { root.run-move(6); } }
             Btn { label: "スラローム往路"; enabled: root.usable; font: 13px; min-width: 70px; clicked => { root.run-move(3); } }

@@ -120,7 +120,7 @@ struct Glue {
     /// How many TASK_DONE have been shown.
     done_seen: u64,
     /// Last lists given to the window: blocks, cells, paths.
-    auto_shown: (Vec<i32>, Vec<i32>, Vec<String>),
+    auto_shown: (Vec<i32>, Vec<String>),
     console: Console,
     console_rows: Rc<VecModel<ConsoleRow>>,
     /// The rows now in `console_rows`, to update only what changed.
@@ -247,6 +247,8 @@ impl Glue {
             scene.obstacles = f.obstacles.clone();
             scene.shelf = Some(f.shelf);
             scene.robot_radius = f.robot_radius;
+            scene.footprint = f.footprint.clone();
+            scene.suction = f.suction.clone();
         }
         if let Some(s) = self.model.state() {
             scene.robot_pose = s.pose;
@@ -601,23 +603,31 @@ impl Glue {
         self.auto_run(auto::TaskKind::Pick as u8, [gripper, block, 0, 0]);
     }
 
-    fn auto_place(&mut self, gripper: i32, column: i32, row: i32) {
+    /// マスへ: TO_SHELF_CELL for the column; the gripper must hold a block. The row is not used (0).
+    fn auto_shelf_cell(&mut self, gripper: i32, column: i32) {
         let mem = self.model.task_memory().cloned().unwrap_or_default();
-        let (cols, rows) = self.model.config().map_or((auto::DEFAULT_COLUMNS, auto::DEFAULT_ROWS), |c| (c.columns, c.rows));
+        let cols = self.model.config().map_or(auto::DEFAULT_COLUMNS, |c| c.columns);
         let holds = u8::try_from(gripper).ok().is_some_and(|g| auto::holding_gripper(&mem).contains(&g));
-        if self.auto_block_reason().is_some()
-            || !holds
-            || !(0..i32::from(cols)).contains(&column)
-            || !(0..i32::from(rows)).contains(&row)
-        {
+        if self.auto_block_reason().is_some() || !holds || !(0..i32::from(cols)).contains(&column) {
             return;
         }
-        self.auto_run(auto::TaskKind::Place as u8, [gripper, 0, column, row]);
+        self.auto_run(auto::TaskKind::ToShelfCell as u8, [gripper, 0, column, 0]);
+    }
+
+    /// 2 個同時に回収: PICK_PAIR; gripper0 takes `block`, gripper1 `block - 1`. The gripper is not used (0).
+    fn auto_pair(&mut self, block: i32) {
+        let Some(b) = u8::try_from(block).ok() else { return };
+        let mem = self.model.task_memory().cloned().unwrap_or_default();
+        let count = self.model.config().map_or(auto::DEFAULT_BLOCKS, |c| c.blocks);
+        if self.auto_block_reason().is_some() || !auto::can_pick_pair(&mem, b, count) {
+            return;
+        }
+        self.auto_run(auto::TaskKind::PickPair as u8, [0, block, 0, 0]);
     }
 
     fn auto_move(&mut self, kind: i32) {
         use auto::TaskKind::*;
-        let ok = [ToSlalomEntrance, ToStart, SlalomForward, SlalomBackward, ToSlalomExit].iter().any(|&k| i32::from(k as u8) == kind);
+        let ok = [ToSlalomEntrance, ToStart, SlalomForward, SlalomBackward, ToSlalomExit, ToShelfFront].iter().any(|&k| i32::from(k as u8) == kind);
         if !ok || self.auto_block_reason().is_some() {
             return;
         }
@@ -757,9 +767,9 @@ impl Glue {
     fn refresh_auto(&mut self, w: &MainWindow) {
         let state = self.model.state();
         let mem = self.model.task_memory().cloned().unwrap_or_default();
-        let (blocks, cols, rows, paths) = match self.model.config() {
-            Some(c) => (c.blocks, c.columns, c.rows, c.paths.clone()),
-            None => (auto::DEFAULT_BLOCKS, auto::DEFAULT_COLUMNS, auto::DEFAULT_ROWS, Vec::new()),
+        let (blocks, cols, paths) = match self.model.config() {
+            Some(c) => (c.blocks, c.columns, c.paths.clone()),
+            None => (auto::DEFAULT_BLOCKS, auto::DEFAULT_COLUMNS, Vec::new()),
         };
         let reason = self.auto_block_reason();
         let task = state.and_then(|s| s.task.as_ref());
@@ -768,20 +778,13 @@ impl Glue {
         w.set_auto_task_label(task.map_or(String::new(), |t| auto::task_label(t.kind, t.args)).into());
         w.set_auto_task_step(task.map_or("", |t| t.step.as_str()).into());
         w.set_auto_columns(i32::from(cols));
-        w.set_auto_rows(i32::from(rows));
         w.set_auto_hold_left(mem.holding[0]);
         w.set_auto_hold_right(mem.holding[1]);
-        if let Some(g) = auto::place_gripper(&mem, w.get_auto_place_gripper().clamp(0, 1) as u8)
+        if let Some(g) = auto::shelf_gripper(&mem, w.get_auto_place_gripper().clamp(0, 1) as u8)
             && i32::from(g) != w.get_auto_place_gripper()
         {
             w.set_auto_place_gripper(i32::from(g));
         }
-        let (col, row) = (w.get_auto_column(), w.get_auto_row());
-        let warning = match (u8::try_from(col), u8::try_from(row)) {
-            (Ok(c), Ok(r)) => auto::place_warning(&mem, c, r),
-            _ => None,
-        };
-        w.set_auto_place_warning(warning.unwrap_or_default().into());
         w.set_auto_memory_text(auto::memory_text(&mem).into());
         w.set_auto_forget_enabled(reason.is_none());
         w.set_auto_active_path(state.and_then(|s| s.path.as_ref()).map_or("", |(n, _)| n.as_str()).into());
@@ -789,24 +792,14 @@ impl Glue {
         w.set_auto_message(self.auto_message.0.as_str().into());
         w.set_auto_message_ok(self.auto_message.1);
         let block_states: Vec<i32> = (0..blocks).map(|b| i32::from(!auto::can_pick(&mem, b))).collect();
-        let mut cells = vec![0; usize::from(cols) * usize::from(rows)];
-        for &(c, r) in &mem.placed {
-            if let Some(i) = usize::from(r).checked_mul(usize::from(cols)).map(|v| v + usize::from(c)).filter(|_| c < cols && r < rows) {
-                cells[i] = 1;
-            }
-        }
         if block_states != self.auto_shown.0 {
             w.set_auto_blocks(ModelRc::from(Rc::new(VecModel::from(block_states.clone()))));
             self.auto_shown.0 = block_states;
         }
-        if cells != self.auto_shown.1 {
-            w.set_auto_cells(ModelRc::from(Rc::new(VecModel::from(cells.clone()))));
-            self.auto_shown.1 = cells;
-        }
-        if paths != self.auto_shown.2 {
+        if paths != self.auto_shown.1 {
             let items: Vec<SharedString> = paths.iter().map(|p| p.as_str().into()).collect();
             w.set_auto_paths(ModelRc::from(Rc::new(VecModel::from(items))));
-            self.auto_shown.2 = paths;
+            self.auto_shown.1 = paths;
         }
     }
 
@@ -1295,7 +1288,7 @@ pub fn start(window: &MainWindow) -> Rc<RefCell<GlueHandle>> {
         last_sent_task: None,
         last_task: None,
         done_seen: 0,
-        auto_shown: (Vec::new(), Vec::new(), Vec::new()),
+        auto_shown: (Vec::new(), Vec::new()),
         console: {
             let mut c = Console::new();
             c.load();
@@ -1385,7 +1378,9 @@ pub fn start(window: &MainWindow) -> Rc<RefCell<GlueHandle>> {
         let g = glue.clone();
         window.on_auto_run_pick(move |gr, b| g.borrow_mut().auto_pick(gr, b));
         let g = glue.clone();
-        window.on_auto_run_place(move |gr, c, r| g.borrow_mut().auto_place(gr, c, r));
+        window.on_auto_run_shelf_cell(move |gr, c| g.borrow_mut().auto_shelf_cell(gr, c));
+        let g = glue.clone();
+        window.on_auto_run_pair(move |b| g.borrow_mut().auto_pair(b));
         let g = glue.clone();
         window.on_auto_run_move(move |k| g.borrow_mut().auto_move(k));
         let g = glue.clone();
@@ -1671,5 +1666,125 @@ mod tests {
             }
             assert!(t0.elapsed() < Duration::from_secs(10), "the robot never took the pose {px},{py}");
         }
+    }
+
+    /// The window on the in-app demo robot, connected and released from the stop, on the auto page.
+    fn demo_on_auto_page() -> (tempfile::TempDir, MainWindow, Rc<RefCell<Glue>>, Rc<RefCell<GlueHandle>>) {
+        let dir = tempfile::tempdir().unwrap();
+        storage::set_data_dir(dir.path().to_path_buf());
+        i_slint_backend_testing::init_no_event_loop();
+        let win = MainWindow::new().unwrap();
+        win.window().set_size(slint::LogicalSize::new(800., 360.));
+        let handle = start(&win);
+        win.show().unwrap();
+        win.invoke_connect_demo();
+        let glue = handle.borrow()._glue.clone();
+        wait_for(&glue, "the demo to connect", |g| g.link_live());
+        win.invoke_release_pressed();
+        wait_for(&glue, "the stop to be released", |g| g.model.state().is_some_and(|s| s.mode != Mode::Stopped));
+        wait_for(&glue, "TASK_MEMORY and CONFIG", |g| g.model.task_memory().is_some() && g.model.config().is_some());
+        win.set_page(2);
+        pump(100);
+        (dir, win, glue, handle)
+    }
+
+    fn wait_for(glue: &Rc<RefCell<Glue>>, what: &str, ok: impl Fn(&Glue) -> bool) {
+        let t0 = Instant::now();
+        while !ok(&glue.borrow()) {
+            assert!(t0.elapsed() < Duration::from_secs(10), "timed out waiting for {what}");
+            pump(50);
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+
+    /// A button of the auto page by its label: its centre, after checking it is on screen and at least 44 px.
+    fn button(win: &MainWindow, label: &str) -> (f32, f32) {
+        let found: Vec<_> = i_slint_backend_testing::ElementHandle::find_by_accessible_label(win, label)
+            .filter(|e| e.accessible_role() == Some(i_slint_core::items::AccessibleRole::Button))
+            .collect();
+        assert_eq!(found.len(), 1, "exactly one button labelled {label:?}");
+        let (p, s) = (found[0].absolute_position(), found[0].size());
+        assert!(s.height >= 44.0 && s.width >= 44.0, "{label}: {}x{} is under 44 px", s.width, s.height);
+        assert!(p.x >= 0.0 && p.y >= 0.0 && p.x + s.width <= 800.0 && p.y + s.height <= 360.0, "{label} is off the 800x360 screen");
+        (p.x + s.width / 2.0, p.y + s.height / 2.0)
+    }
+
+    fn tap_button(win: &MainWindow, label: &str) {
+        use i_slint_core::input::TouchPhase::{Ended, Started};
+        let (x, y) = button(win, label);
+        touch(win.window(), x, y, Started);
+        touch(win.window(), x, y, Ended);
+        pump(50);
+    }
+
+    /// Waits until the demo's task is over and the page lets the next one start.
+    fn wait_task_over(glue: &Rc<RefCell<Glue>>) {
+        wait_for(glue, "the task to finish", |g| g.model.state().is_some_and(|s| s.task.is_none()) && g.auto_block_reason().is_none());
+    }
+
+    fn sent(glue: &Rc<RefCell<Glue>>) -> Option<(u8, [i32; 4])> {
+        glue.borrow().last_sent_task
+    }
+
+    fn set_suction_and_wait(glue: &Rc<RefCell<Glue>>, gripper: u8, holding: [bool; 2]) {
+        {
+            let g = glue.borrow();
+            let c = g.client.as_ref().unwrap();
+            let req = c.next_req();
+            c.send(Msg::SetSuction { req, gripper, on: false });
+        }
+        wait_for(glue, "the held state to follow the suction", |g| g.model.task_memory().is_some_and(|m| m.holding == holding));
+    }
+
+    #[test]
+    fn auto_page_buttons_send_the_new_task_kinds() {
+        let (_dir, win, glue, _handle) = demo_on_auto_page();
+        // The row choice and the placed-cell marks are gone.
+        for gone in ["済 0-0", "配置", "0-0", "段0"] {
+            assert!(i_slint_backend_testing::ElementHandle::find_by_accessible_label(&win, gone).next().is_none(), "{gone}");
+        }
+        // 4+3: PICK_PAIR 8, block 4 (gripper0 takes 4, gripper1 takes 3).
+        assert_eq!(sent(&glue), None);
+        tap_button(&win, "4+3");
+        assert_eq!(sent(&glue), Some((8, [0, 4, 0, 0])));
+        wait_task_over(&glue);
+        assert_eq!(glue.borrow().model.task_memory().unwrap().holding, [true, true]);
+        assert_eq!(glue.borrow().model.task_memory().unwrap().picked, vec![4, 3]);
+        assert_eq!(glue.borrow().auto_message, ("2 個同時に回収 4+3: 成功".to_owned(), true));
+        // The pair is gone, the other is still free.
+        tap_button(&win, "4+3");
+        assert_eq!(sent(&glue), Some((8, [0, 4, 0, 0])), "4+3 is picked: nothing new is sent");
+        assert!(glue.borrow().auto_reqs.is_empty());
+        // 棚の前へ: TO_SHELF_FRONT 7, no arguments.
+        tap_button(&win, "棚の前へ");
+        assert_eq!(sent(&glue), Some((7, [0; 4])));
+        wait_task_over(&glue);
+        // マスへ: column 1, the left gripper (both hold, left is the default). The row is always 0.
+        tap_button(&win, "列 1");
+        tap_button(&win, "マスへ");
+        assert_eq!(sent(&glue), Some((5, [0, 0, 1, 0])));
+        wait_task_over(&glue);
+        assert_eq!(glue.borrow().auto_message.0, "マスへ 左 列 1: 成功");
+        assert_eq!(glue.borrow().model.task_memory().unwrap().holding, [true, true], "TO_SHELF_CELL does not release");
+        // Releasing the left suction drops its held state; the page then picks the right gripper.
+        set_suction_and_wait(&glue, 0, [false, true]);
+        pump(100);
+        assert_eq!(win.get_auto_place_gripper(), 1);
+        tap_button(&win, "列 2");
+        tap_button(&win, "マスへ");
+        assert_eq!(sent(&glue), Some((5, [1, 0, 2, 0])));
+        wait_task_over(&glue);
+        set_suction_and_wait(&glue, 1, [false, false]);
+        pump(100);
+        // Nothing held: マスへ sends nothing.
+        tap_button(&win, "マスへ");
+        assert_eq!(sent(&glue), Some((5, [1, 0, 2, 0])));
+        // 2+1.
+        tap_button(&win, "2+1");
+        assert_eq!(sent(&glue), Some((8, [0, 2, 0, 0])));
+        wait_task_over(&glue);
+        assert_eq!(glue.borrow().model.task_memory().unwrap().picked, vec![4, 3, 2, 1]);
+        assert!(win.get_auto_memory_text().contains("回収済み: 4, 3, 2, 1"));
+        assert!(!win.get_auto_memory_text().contains("置いた"));
     }
 }

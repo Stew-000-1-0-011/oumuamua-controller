@@ -17,6 +17,27 @@ pub const BOUNDS: [f64; 4] = [-2.785, -1.655, 2.785, 1.655];
 pub const SHELF: [f64; 4] = [1.5625, -0.30, 2.5025, 0.30];
 pub const START: [f64; 3] = [-2.2, 1.3, std::f64::consts::PI];
 pub const ROBOT_RADIUS: f64 = 0.32;
+// The robot's outline (x forward, y left) and its suction centres (left gripper first): config.py DEFAULTS
+// "footprint" and "suction_offsets", which come from task_commander.yaml (a test keeps them equal).
+pub const FOOTPRINT: [(f64, f64); 16] = [
+    (0.0834, -0.2255),
+    (0.1582, -0.1824),
+    (0.1589, -0.1818),
+    (0.1593, -0.1809),
+    (0.1593, 0.1910),
+    (0.1590, 0.1920),
+    (0.1584, 0.1927),
+    (0.0839, 0.2357),
+    (0.0830, 0.2360),
+    (0.0822, 0.2359),
+    (-0.2393, 0.0504),
+    (-0.3311, 0.0504),
+    (-0.3311, -0.0400),
+    (-0.2393, -0.0400),
+    (0.0817, -0.2253),
+    (0.0825, -0.2256),
+];
+pub const SUCTION_OFFSETS: [(f64, f64); 2] = [(0.269, 0.120), (0.269, -0.120)];
 // Motor model: the same as `motor_snapshot` in fake_robot.py (a test keeps the constants equal).
 // Wheel i sits at 90 + 120 i degrees; its speed is the body velocity along its rolling direction
 // plus the turn, the current is proportional to speed, a suction motor draws SUCTION_A while on,
@@ -48,14 +69,20 @@ const LIFT_SPEED: f64 = 0.05; // m/s
 const STAGE_S: f64 = 1.0;
 const PATH_RUN_S: f64 = 3.0;
 const MAX_RANGE: f64 = 30.0;
-/// RunTask kinds with their own stages: 0 = pick up a block, 5 = place on the shelf.
+/// RunTask kinds with their own stages (fake_robot.py TASK_STAGES): 0 PICK, 5 TO_SHELF_CELL, 7 TO_SHELF_FRONT,
+/// 8 PICK_PAIR. 5 and 7 only move: the lift, the suction and what is held stay as they were.
 const PICK: u8 = 0;
-const PLACE: u8 = 5;
+const TO_SHELF_CELL: u8 = 5;
+const TO_SHELF_FRONT: u8 = 7;
+const PICK_PAIR: u8 = 8;
+/// PICK_PAIR blocks that have a pose (task_commander.yaml pick.pairs; fake_robot.py PAIR_BLOCKS).
+pub const PAIR_BLOCKS: [i32; 2] = [4, 2];
 
 fn stages(kind: u8) -> &'static [&'static str] {
     match kind {
-        PICK => &["ブロックへ移動", "吸着", "持ち上げ"],
-        PLACE => &["棚へ移動", "差し込み", "解放"],
+        PICK | PICK_PAIR => &["ブロックへ移動", "吸着", "持ち上げ"],
+        TO_SHELF_CELL => &["マスへ移動"],
+        TO_SHELF_FRONT => &["棚の前へ移動"],
         _ => &["移動中", "到着"],
     }
 }
@@ -93,7 +120,6 @@ struct PathRun {
 pub struct Memory {
     pub holding: [bool; 2],
     pub picked: Vec<u8>,
-    pub placed: Vec<(u8, u8)>,
 }
 
 pub struct Sim {
@@ -174,7 +200,7 @@ impl Sim {
         ev
     }
 
-    fn finish_task(&mut self, kind: u8, [gripper, block, column, row]: [i32; 4]) {
+    fn finish_task(&mut self, kind: u8, [gripper, block, ..]: [i32; 4]) {
         let g = usize::from(gripper == 1);
         let byte = |v: i32| v.clamp(0, 255) as u8;
         match kind {
@@ -182,9 +208,9 @@ impl Sim {
                 self.memory.holding[g] = true;
                 self.memory.picked.push(byte(block));
             }
-            PLACE => {
-                self.memory.holding[g] = false;
-                self.memory.placed.push((byte(column), byte(row)));
+            PICK_PAIR => {
+                self.memory.holding = [true, true];
+                self.memory.picked.extend([byte(block), byte(block - 1)]);
             }
             _ => {}
         }
@@ -259,8 +285,21 @@ impl Sim {
     }
 
     // -------------------------------------------------------- task / path
-    pub fn start_task(&mut self, kind: u8, args: [i32; 4]) {
+    /// Starts a task; a PICK_PAIR without a pose for its blocks is refused (task_commander does the same).
+    pub fn start_task(&mut self, kind: u8, args: [i32; 4]) -> Result<(), String> {
+        if kind == PICK_PAIR && !PAIR_BLOCKS.contains(&args[1]) {
+            return Err(format!("no pose for the pair of blocks {} and {}", args[1], args[1] - 1));
+        }
         self.task = Some(Task { kind, args, stage: 0, t: 0.0 });
+        Ok(())
+    }
+
+    /// Switches a suction. Like task_commander, releasing a holding gripper's suction drops what it held.
+    pub fn set_suction(&mut self, g: usize, on: bool) {
+        self.suction[g] = on;
+        if !on {
+            self.memory.holding[g] = false;
+        }
     }
 
     pub fn cancel_task(&mut self) {
@@ -496,5 +535,71 @@ mod tests {
         assert_eq!(defaults("shelf"), SHELF);
         assert_eq!(defaults("start_pose"), START);
         assert_eq!(defaults("robot_radius"), [ROBOT_RADIUS]);
+        assert_eq!(defaults("footprint"), FOOTPRINT.iter().flat_map(|p| [p.0, p.1]).collect::<Vec<_>>());
+        assert_eq!(defaults("suction_offsets"), SUCTION_OFFSETS.iter().flat_map(|p| [p.0, p.1]).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn task_stages_match_the_fake_robot() {
+        const PY: &str = include_str!("../../../ros/oumuamua_controller_bridge/oumuamua_controller_bridge/fake_robot.py");
+        let py_stages = |kind: u8| {
+            let at = PY.find(&format!("{kind}: [")).unwrap_or_else(|| panic!("TASK_STAGES {kind}"));
+            let rest = &PY[at..];
+            let list = &rest[rest.find('[').unwrap() + 1..rest.find(']').unwrap()];
+            list.split(',').map(|t| t.trim().trim_matches('"').to_owned()).collect::<Vec<_>>()
+        };
+        for kind in [PICK, TO_SHELF_CELL, TO_SHELF_FRONT, PICK_PAIR] {
+            assert_eq!(py_stages(kind), stages(kind), "kind {kind}");
+        }
+        assert!(PY.contains("PAIR_BLOCKS = (4, 2)") && PAIR_BLOCKS == [4, 2]);
+    }
+
+    fn run_to_end(s: &mut Sim) -> Vec<Event> {
+        let mut ev = Vec::new();
+        for _ in 0..80 {
+            ev.extend(s.advance(0.1));
+        }
+        ev
+    }
+
+    #[test]
+    fn to_shelf_cell_and_front_only_move() {
+        let mut s = Sim::default();
+        s.start_task(PICK, [1, 2, 0, 0]).unwrap();
+        run_to_end(&mut s);
+        assert_eq!(s.memory().holding, [false, true]);
+        s.start_task(TO_SHELF_FRONT, [0; 4]).unwrap();
+        assert_eq!(s.task_state().unwrap().step, "棚の前へ移動");
+        assert!(matches!(run_to_end(&mut s)[..], [Event::TaskDone { kind: 7 }]));
+        s.start_task(TO_SHELF_CELL, [1, 0, 2, 0]).unwrap();
+        assert_eq!(s.task_state().unwrap().step, "マスへ移動");
+        assert!(matches!(run_to_end(&mut s)[..], [Event::TaskDone { kind: 5 }]));
+        assert_eq!(s.memory(), &Memory { holding: [false, true], picked: vec![2] }, "nothing held or remembered changes");
+    }
+
+    #[test]
+    fn pick_pair_holds_both_and_marks_both_blocks() {
+        let mut s = Sim::default();
+        s.start_task(PICK_PAIR, [0, 4, 0, 0]).unwrap();
+        run_to_end(&mut s);
+        assert_eq!(s.memory(), &Memory { holding: [true, true], picked: vec![4, 3] });
+        s.start_task(PICK_PAIR, [0, 2, 0, 0]).unwrap();
+        run_to_end(&mut s);
+        assert_eq!(s.memory().picked, vec![4, 3, 2, 1]);
+        assert!(s.start_task(PICK_PAIR, [0, 3, 0, 0]).is_err(), "no pose for 3 and 2");
+        assert!(s.task_state().is_none());
+    }
+
+    #[test]
+    fn releasing_suction_drops_the_held_state() {
+        let mut s = Sim::default();
+        s.start_task(PICK_PAIR, [0, 4, 0, 0]).unwrap();
+        run_to_end(&mut s);
+        s.set_suction(0, false);
+        assert_eq!(s.memory().holding, [false, true]);
+        s.set_suction(1, true);
+        assert_eq!(s.memory().holding, [false, true], "switching on keeps it");
+        s.set_suction(1, false);
+        assert_eq!(s.memory(), &Memory { holding: [false, false], picked: vec![4, 3] }, "picked blocks stay");
     }
 }

@@ -141,6 +141,13 @@ impl Reader<'_> {
     fn get<T: Wire>(&self, i: usize) -> Res<T> {
         T::from_value(self.raw(i)?).map_err(|expected| DecodeError::Type { index: i, expected })
     }
+    /// An optional trailing field: `T::default()` when the sender (an older peer) left it out or sent nil.
+    fn opt<T: Wire + Default>(&self, i: usize) -> Res<T> {
+        match self.items.get(i) {
+            None | Some(Value::Nil) => Ok(T::default()),
+            Some(_) => self.get(i),
+        }
+    }
     fn bin(&self, i: usize) -> Res<Vec<u8>> {
         match self.raw(i)? {
             Value::Binary(b) => Ok(b.clone()),
@@ -355,7 +362,17 @@ pub enum Msg {
         columns: u8,
         rows: u8,
     },
-    Field { bounds: [f64; 4], obstacles: Vec<[f64; 4]>, shelf: [f64; 4], start: [f64; 3], robot_radius: f64 },
+    /// `footprint` (robot-frame polygon, x forward, y left) and `suction` (the two suction centres, gripper0
+    /// first) are empty from a peer that does not send them: the map then draws a `robot_radius` circle.
+    Field {
+        bounds: [f64; 4],
+        obstacles: Vec<[f64; 4]>,
+        shelf: [f64; 4],
+        start: [f64; 3],
+        robot_radius: f64,
+        footprint: Vec<(f64, f64)>,
+        suction: Vec<(f64, f64)>,
+    },
     PathShape { name: String, points: Vec<(i16, i16)> },
     TaskMemory { holding: [bool; 2], picked: Vec<u8>, placed: Vec<(u8, u8)> },
     TaskDone { kind: u8, ok: bool, message: String },
@@ -395,7 +412,9 @@ impl Msg {
             Config { robot_name, paths, lift_presets, lift_max, speed_levels, blocks, columns, rows } => {
                 row!(51; robot_name, paths, lift_presets, lift_max, speed_levels, blocks, columns, rows)
             }
-            Field { bounds, obstacles, shelf, start, robot_radius } => row!(52; bounds, obstacles, shelf, start, robot_radius),
+            Field { bounds, obstacles, shelf, start, robot_radius, footprint, suction } => {
+                row!(52; bounds, obstacles, shelf, start, robot_radius, footprint, suction)
+            }
             PathShape { name, points } => row!(53; name, &Raw(points_bin(points))),
             TaskMemory { holding, picked, placed } => row!(54; holding, picked, placed),
             TaskDone { kind, ok, message } => row!(55; kind, ok, message),
@@ -454,6 +473,8 @@ impl Msg {
                 shelf: r.get(3)?,
                 start: r.get(4)?,
                 robot_radius: r.get(5)?,
+                footprint: r.opt(6)?,
+                suction: r.opt(7)?,
             },
             53 => PathShape { name: r.get(1)?, points: r.points(2)? },
             54 => TaskMemory { holding: r.get(1)?, picked: r.get(2)?, placed: r.get(3)? },

@@ -90,18 +90,14 @@ export component MainWindow inherits Window {
     in-out property <int> auto-place-gripper: 0;
     in-out property <int> auto-block: -1;
     in-out property <int> auto-column: -1;
-    in-out property <int> auto-row: -1;
     in property <string> auto-block-reason;
     in property <bool> auto-task-active: false;
     in property <string> auto-task-label;
     in property <string> auto-task-step;
     in property <[int]> auto-blocks;
-    in property <[int]> auto-cells;
     in property <int> auto-columns: 3;
-    in property <int> auto-rows: 3;
     in property <bool> auto-hold-left: false;
     in property <bool> auto-hold-right: false;
-    in property <string> auto-place-warning;
     in property <string> auto-memory-text;
     in property <bool> auto-forget-enabled: true;
     in property <[string]> auto-paths;
@@ -114,7 +110,8 @@ export component MainWindow inherits Window {
 
     callback connect(string, bool);
     callback auto-run-pick(int, int);
-    callback auto-run-place(int, int, int);
+    callback auto-run-shelf-cell(int, int);
+    callback auto-run-pair(int);
     callback auto-run-move(int);
     callback auto-cancel();
     callback auto-forget-pressed();
@@ -260,18 +257,14 @@ export component MainWindow inherits Window {
         place-gripper <=> root.auto-place-gripper;
         sel-block <=> root.auto-block;
         sel-column <=> root.auto-column;
-        sel-row <=> root.auto-row;
         block-reason: root.auto-block-reason;
         task-active: root.auto-task-active;
         task-label: root.auto-task-label;
         task-step: root.auto-task-step;
         blocks: root.auto-blocks;
-        cells: root.auto-cells;
         columns: root.auto-columns;
-        rows: root.auto-rows;
         hold-left: root.auto-hold-left;
         hold-right: root.auto-hold-right;
-        place-warning: root.auto-place-warning;
         memory-text: root.auto-memory-text;
         forget-enabled: root.auto-forget-enabled;
         paths: root.auto-paths;
@@ -280,7 +273,8 @@ export component MainWindow inherits Window {
         message: root.auto-message;
         message-ok: root.auto-message-ok;
         run-pick(g, b) => { root.auto-run-pick(g, b); }
-        run-place(g, c, r) => { root.auto-run-place(g, c, r); }
+        run-shelf-cell(g, c) => { root.auto-run-shelf-cell(g, c); }
+        run-pair(b) => { root.auto-run-pair(b); }
         run-move(k) => { root.auto-run-move(k); }
         cancel => { root.auto-cancel(); }
         forget-pressed => { root.auto-forget-pressed(); }

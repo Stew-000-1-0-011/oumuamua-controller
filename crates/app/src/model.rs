@@ -44,13 +44,18 @@ pub struct Field {
     pub shelf: [f64; 4],
     pub start: [f64; 3],
     pub robot_radius: f64,
+    /// The robot's outline in its own frame (x forward, y left); empty = draw a `robot_radius` circle.
+    pub footprint: Vec<(f64, f64)>,
+    /// Suction centres in the robot frame, gripper0 (left) first; may be empty.
+    pub suction: Vec<(f64, f64)>,
 }
 
+/// What task_commander remembers. It no longer remembers placed cells: the TASK_MEMORY `placed` list is
+/// kept on the wire for compatibility, but it is ignored here.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct TaskMemory {
     pub holding: [bool; 2],
     pub picked: Vec<u8>,
-    pub placed: Vec<(u8, u8)>,
 }
 
 /// Nothing drains shell events until the console exists; keep memory bounded.
@@ -228,14 +233,14 @@ impl AppModel {
                     robot_name, paths, lift_presets, lift_max, speed_levels, blocks, columns, rows,
                 });
             }
-            Msg::Field { bounds, obstacles, shelf, start, robot_radius } => {
-                self.field = Some(Field { bounds, obstacles, shelf, start, robot_radius });
+            Msg::Field { bounds, obstacles, shelf, start, robot_radius, footprint, suction } => {
+                self.field = Some(Field { bounds, obstacles, shelf, start, robot_radius, footprint, suction });
             }
             Msg::PathShape { name, points } => {
                 self.path_shapes.insert(name, points);
             }
-            Msg::TaskMemory { holding, picked, placed } => {
-                self.task_memory = Some(TaskMemory { holding, picked, placed });
+            Msg::TaskMemory { holding, picked, placed: _ } => {
+                self.task_memory = Some(TaskMemory { holding, picked });
             }
             Msg::ShellOpened { tab, replay } => self.push_shell(ShellEvent::Opened { tab, replay }),
             Msg::ShellOutput { tab, data } => self.push_shell(ShellEvent::Output { tab, data }),
@@ -387,6 +392,8 @@ mod tests {
             shelf: [1.0, 2.0, 3.0, 4.0],
             start: [0.0, 0.0, 0.0],
             robot_radius: 0.3,
+            footprint: vec![(0.2, 0.1), (-0.3, 0.0)],
+            suction: vec![(0.27, 0.12), (0.27, -0.12)],
         }));
         m.apply(LinkEvent::Msg(Msg::PathShape { name: "p".into(), points: vec![(1, 2), (3, 4)] }));
         m.apply(LinkEvent::Msg(Msg::TaskMemory {
@@ -399,7 +406,10 @@ mod tests {
         assert_eq!(m.field().unwrap().robot_radius, 0.3);
         assert_eq!(m.path_shape("p").unwrap(), &[(1, 2), (3, 4)]);
         assert!(m.path_shape("q").is_none());
-        assert_eq!(m.task_memory().unwrap().placed, vec![(0, 1)]);
+        assert_eq!(m.field().unwrap().footprint.len(), 2);
+        assert_eq!(m.field().unwrap().suction, vec![(0.27, 0.12), (0.27, -0.12)]);
+        // The wire still carries `placed`; the model ignores it.
+        assert_eq!(m.task_memory().unwrap(), &TaskMemory { holding: [true, false], picked: vec![1, 2] });
         assert_eq!(m.scan(), &[(1.0, 2.0)]);
     }
 

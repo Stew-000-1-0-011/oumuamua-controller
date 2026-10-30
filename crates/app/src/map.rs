@@ -134,6 +134,10 @@ pub struct Scene {
     pub shelf: Option<[f64; 4]>,
     pub robot_pose: Option<[f64; 3]>,
     pub robot_radius: f64,
+    /// The robot's outline in its own frame (x forward, y left). Fewer than 3 points: a `robot_radius` circle.
+    pub footprint: Vec<(f64, f64)>,
+    /// Suction centres in the robot frame, marked on the outline.
+    pub suction: Vec<(f64, f64)>,
     pub scan: Vec<(f32, f32)>,
     pub path: Vec<(f32, f32)>,
     /// Follow target.
@@ -151,6 +155,8 @@ const LIDAR: [u8; 4] = [0x3f, 0xb9, 0x50, 255];
 const ROBOT: [u8; 4] = [0xf0, 0x6a, 0x3a, 255];
 const GRID: [u8; 4] = [0x1c, 0x22, 0x2b, 255];
 const PICK: [u8; 4] = [0xff, 0x4d, 0xb8, 150];
+const BACKGROUND_STROKE: [u8; 4] = [0x0b, 0x0e, 0x12, 255];
+const SUCTION: [u8; 4] = [0xff, 0xf2, 0x8a, 255];
 const TARGET: [u8; 4] = [0xb3, 0x8c, 0xff, 255];
 
 fn paint(c: [u8; 4]) -> Paint<'static> {
@@ -196,6 +202,15 @@ fn arrow(pm: &mut PixmapMut, at: (f32, f32), yaw: f64, len: f32, c: [u8; 4], wid
         line(pm, tip, (tip.0 + hx * head, tip.1 + hy * head), c, width);
     }
 }
+
+/// A point of the robot's frame (x forward, y left) in field coordinates for a robot at `pose`.
+pub fn robot_to_field(pose: &[f64; 3], p: (f64, f64)) -> (f64, f64) {
+    let (s, c) = pose[2].sin_cos();
+    (pose[0] + c * p.0 - s * p.1, pose[1] + s * p.0 + c * p.1)
+}
+
+/// Fewest pixels from the robot's centre to its farthest outline point; below it the circle is drawn.
+const MIN_ROBOT_PX: f32 = 7.0;
 
 pub fn render(view: &MapView, w: u32, h: u32, scene: &Scene) -> SharedPixelBuffer<Rgba8Pixel> {
     let mut buf = SharedPixelBuffer::<Rgba8Pixel>::new(w.max(1), h.max(1));
@@ -249,14 +264,39 @@ pub fn render(view: &MapView, w: u32, h: u32, scene: &Scene) -> SharedPixelBuffe
     }
     if let Some(p) = &scene.robot_pose {
         let at = px((p[0], p[1]));
-        let r = (scene.robot_radius as f32 * view.scale).max(7.0);
-        if let Some(c) = PathBuilder::from_circle(at.0, at.1, r) {
-            pm.fill_path(&c, &paint(ROBOT), FillRule::Winding, Transform::identity(), None);
-            let stroke = Stroke { width: 2.0, ..Stroke::default() };
-            pm.stroke_path(&c, &paint(WALL), &stroke, Transform::identity(), None);
+        let stroke = Stroke { width: 2.0, ..Stroke::default() };
+        let reach = scene.footprint.iter().map(|q| q.0.hypot(q.1) as f32 * view.scale).fold(0.0, f32::max);
+        let outline = scene.footprint.len() >= 3 && reach >= MIN_ROBOT_PX;
+        let front;
+        if outline {
+            let mut pb = PathBuilder::new();
+            for (i, &q) in scene.footprint.iter().enumerate() {
+                let (x, y) = px(robot_to_field(p, q));
+                if i == 0 { pb.move_to(x, y) } else { pb.line_to(x, y) }
+            }
+            pb.close();
+            if let Some(path) = pb.finish() {
+                pm.fill_path(&path, &paint(ROBOT), FillRule::Winding, Transform::identity(), None);
+                pm.stroke_path(&path, &paint(WALL), &stroke, Transform::identity(), None);
+            }
+            front = scene.footprint.iter().map(|q| q.0 as f32).fold(0.0, f32::max) * view.scale;
+            for &q in &scene.suction {
+                let (x, y) = px(robot_to_field(p, q));
+                if let Some(c) = PathBuilder::from_circle(x, y, (0.02 * view.scale).max(3.0)) {
+                    pm.fill_path(&c, &paint(SUCTION), FillRule::Winding, Transform::identity(), None);
+                    pm.stroke_path(&c, &paint(BACKGROUND_STROKE), &Stroke { width: 1.0, ..Stroke::default() }, Transform::identity(), None);
+                }
+            }
+        } else {
+            let r = (scene.robot_radius as f32 * view.scale).max(MIN_ROBOT_PX);
+            if let Some(c) = PathBuilder::from_circle(at.0, at.1, r) {
+                pm.fill_path(&c, &paint(ROBOT), FillRule::Winding, Transform::identity(), None);
+                pm.stroke_path(&c, &paint(WALL), &stroke, Transform::identity(), None);
+            }
+            front = r;
         }
         let (dx, dy) = (p[2].cos() as f32, -(p[2].sin() as f32));
-        line(&mut pm, at, (at.0 + dx * r, at.1 + dy * r), [0xff, 0xff, 0xff, 255], 3.0);
+        line(&mut pm, at, (at.0 + dx * front, at.1 + dy * front), [0xff, 0xff, 0xff, 255], 3.0);
     }
     if let Some((p, yaw)) = &scene.pose_drag {
         arrow(&mut pm, px((p[0], p[1])), *yaw, 56.0, PICK, 6.0);
@@ -352,5 +392,56 @@ mod tests {
         let (wx, wy) = view.to_px((3.0, 4.0));
         let near_wall = (-2..=2).any(|d| px(&buf, wx as u32, (wy as i32 + d) as u32)[..3] != BACKGROUND);
         assert!(near_wall);
+    }
+
+    const OUTLINE: [(f64, f64); 4] = [(0.16, -0.2), (0.16, 0.2), (-0.33, 0.05), (-0.33, -0.05)];
+
+    #[test]
+    fn robot_to_field_rotates_by_yaw() {
+        let q = robot_to_field(&[1.0, 2.0, std::f64::consts::FRAC_PI_2], (0.5, 0.25));
+        assert!((q.0 - 0.75).abs() < 1e-9 && (q.1 - 2.5).abs() < 1e-9, "{q:?}");
+    }
+
+    #[test]
+    fn footprint_is_drawn_rotated_and_not_as_a_circle() {
+        let view = MapView::fit(FIELD, 600.0, 400.0);
+        let at = |yaw: f64| Scene {
+            robot_pose: Some([3.0, 2.0, yaw]),
+            robot_radius: 0.32,
+            footprint: OUTLINE.to_vec(),
+            suction: vec![(0.269, 0.12), (0.269, -0.12)],
+            ..Scene::default()
+        };
+        let is_bg = |b: &SharedPixelBuffer<Rgba8Pixel>, f: (f64, f64)| {
+            let p = view.to_px((f.0 as f32, f.1 as f32));
+            px(b, p.0 as u32, p.1 as u32)[..3] == BACKGROUND
+        };
+        let east = render(&view, 600, 400, &at(0.0));
+        // Front corner region (0.15, 0.15) is inside the outline; (0.15, 0.25) is outside (y half-width 0.2),
+        // and so is a circle of 0.32 m at distance 0.29 -> the circle would have covered it.
+        assert!(!is_bg(&east, (3.15, 2.15)));
+        assert!(is_bg(&east, (3.15, 2.27)), "outside the outline, inside the old circle");
+        assert!(!is_bg(&east, (2.72, 2.04)), "LiDAR tail reaches 0.33 m back");
+        assert!(is_bg(&east, (3.0 - 0.1, 2.0 + 0.2)), "the tail is narrow");
+        // Turned to face north the same tail points down the map (field -y).
+        let north = render(&view, 600, 400, &at(std::f64::consts::FRAC_PI_2));
+        assert!(!is_bg(&north, (3.04, 1.72)));
+        assert!(is_bg(&north, (3.05, 2.0 + 0.3)), "nothing behind the front, off the front face (0.16)");
+        // Suction centres are marked in their own colour.
+        let mark = view.to_px((3.0 + 0.269, 2.0 + 0.12));
+        assert_eq!(px(&east, mark.0.round() as u32, mark.1.round() as u32)[..3], SUCTION[..3]);
+    }
+
+    #[test]
+    fn without_a_footprint_the_circle_is_drawn() {
+        let view = MapView::fit(FIELD, 600.0, 400.0);
+        let scene = Scene { robot_pose: Some([3.0, 2.0, 0.0]), robot_radius: 0.32, ..Scene::default() };
+        let buf = render(&view, 600, 400, &scene);
+        let p = view.to_px((3.0, 2.0 + 0.27));
+        assert_ne!(px(&buf, p.0 as u32, p.1 as u32)[..3], BACKGROUND);
+        // Fewer than three points is not an outline either.
+        let two = Scene { footprint: vec![(0.1, 0.0), (0.2, 0.0)], ..scene };
+        let buf = render(&view, 600, 400, &two);
+        assert_ne!(px(&buf, p.0 as u32, p.1 as u32)[..3], BACKGROUND);
     }
 }

@@ -10,6 +10,10 @@ export component Btn inherits Rectangle {
     in property <color> tint: Theme.accent;
     in property <length> font: Theme.font;
     callback clicked();
+    accessible-role: button;
+    accessible-label: root.label;
+    accessible-enabled: root.enabled;
+    accessible-action-default => { if root.enabled { root.clicked(); } }
     min-height: Theme.tap - 4px;
     min-width: Theme.tap;
     border-radius: 8px;
