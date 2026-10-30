@@ -1618,10 +1618,8 @@ mod tests {
         pump(100);
         win.set_page(2);
         pump(50);
-        // 地図で姿勢を指定 (bottom row, right end).
-        touch(win.window(), 630., 332., Started);
-        touch(win.window(), 630., 332., Ended);
-        pump(50);
+        // 地図で姿勢を指定 (bottom row).
+        tap_button(&win, "地図で姿勢を指定");
         assert_eq!(win.get_page(), 0, "the button shows the output screen");
         assert!(win.get_pose_pick());
         // Long press on the map, drag towards upper right, lift.
@@ -1786,5 +1784,50 @@ mod tests {
         assert_eq!(glue.borrow().model.task_memory().unwrap().picked, vec![4, 3, 2, 1]);
         assert!(win.get_auto_memory_text().contains("回収済み: 4, 3, 2, 1"));
         assert!(!win.get_auto_memory_text().contains("置いた"));
+    }
+
+    /// Every interactive element of the auto page: at least 44 px, inside the panel, and no two rectangles
+    /// overlap, at the phone's usual window sizes (800x336 is 800x360 with a bottom inset).
+    #[test]
+    fn auto_panel_controls_do_not_overlap_or_leave_the_panel() {
+        use i_slint_backend_testing::ElementHandle;
+        let (_dir, win, _glue, _handle) = demo_on_auto_page();
+        // The output screen's map and console buttons sit under the panel: it must hide them, not let them
+        // show through between the cards.
+        assert!(win.get_auto_backdrop_alpha() >= 0.9, "the panel is see-through (alpha {})", win.get_auto_backdrop_alpha());
+        for open in [false, true] {
+            win.set_auto_paths_open(open);
+            for (w, h) in [(800.0, 360.0), (800.0, 336.0), (914.0, 411.0), (1280.0, 720.0)] {
+                win.window().set_size(slint::LogicalSize::new(w, h));
+                pump(100);
+                let panel = ElementHandle::find_by_element_type_name(&win, "AutoPanel").next().expect("AutoPanel");
+                let (pp, ps) = (panel.absolute_position(), panel.size());
+                let items: Vec<(String, [f32; 4])> = panel
+                    .query_descendants()
+                    .match_accessible_role(i_slint_core::items::AccessibleRole::Button)
+                    .find_all()
+                    .iter()
+                    .map(|e| {
+                        let (p, s) = (e.absolute_position(), e.size());
+                        (e.accessible_label().unwrap_or_default().to_string(), [p.x, p.y, p.x + s.width, p.y + s.height])
+                    })
+                    .collect();
+                assert!(items.len() >= 14, "{w}x{h}: only {} controls found", items.len());
+                for (name, r) in &items {
+                    let tag = format!("{w}x{h} paths_open={open}: {name:?} {r:?}");
+                    assert!(r[2] - r[0] >= 43.9 && r[3] - r[1] >= 43.9, "under 44 px: {tag}");
+                    assert!(
+                        r[0] >= pp.x - 0.5 && r[1] >= pp.y - 0.5 && r[2] <= pp.x + ps.width + 0.5 && r[3] <= pp.y + ps.height + 0.5,
+                        "outside the panel {pp:?} {ps:?}: {tag}"
+                    );
+                }
+                for (i, (na, a)) in items.iter().enumerate() {
+                    for (nb, b) in &items[i + 1..] {
+                        let (dx, dy) = (a[2].min(b[2]) - a[0].max(b[0]), a[3].min(b[3]) - a[1].max(b[1]));
+                        assert!(dx <= 0.5 || dy <= 0.5, "{w}x{h} paths_open={open}: {na:?} {a:?} overlaps {nb:?} {b:?}");
+                    }
+                }
+            }
+        }
     }
 }

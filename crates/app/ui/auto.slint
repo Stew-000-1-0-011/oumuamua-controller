@@ -34,7 +34,9 @@ component Panel inherits Rectangle {
 
 // Drawn over the output screen: no background of its own, only plates around the controls.
 export component AutoPanel inherits Rectangle {
-    background: transparent;
+    background: Theme.bg.with-alpha(0.96);
+    // How opaque the panel's backdrop is (0..1): the output screen's map and console must not show through.
+    out property <float> backdrop-alpha: root.background.alpha;
 
     // Why the task buttons are unusable ("" = usable).
     in property <string> block-reason;
@@ -60,6 +62,8 @@ export component AutoPanel inherits Rectangle {
     in-out property <int> place-gripper: 0;
     in-out property <int> sel-block: -1;
     in-out property <int> sel-column: -1;
+    // 移動 / 経路: which list the right-hand card shows.
+    in-out property <bool> paths-open: false;
 
     callback run-pick(int, int);
     // マスへ (TO_SHELF_CELL): gripper, column.
@@ -99,10 +103,17 @@ export component AutoPanel inherits Rectangle {
 
 
     property <length> margin: 8px;
+    property <length> gap: 6px;
     property <length> row-h: 44px;
     // Below the status band (it stays readable).
     property <length> top-y: Theme.band-h + 4px;
-    property <length> side-w: 240px;
+    // Three columns under the status line (回収 | マス | 移動), one row of general buttons at the bottom.
+    property <length> body-y: root.top-y + 32px;
+    property <length> avail: root.width - 2 * root.margin - 2 * root.gap;
+    property <length> col1-w: max(244px, root.avail * 0.36);
+    property <length> col-w: (root.avail - root.col1-w) / 2;
+    property <length> col2-x: root.margin + root.col1-w + root.gap;
+    property <length> col3-x: root.col2-x + root.col-w + root.gap;
 
     // Swallows every touch that no control takes, so nothing reaches the output screen below.
     TouchArea { }
@@ -111,7 +122,7 @@ export component AutoPanel inherits Rectangle {
     Rectangle {
         x: root.margin;
         y: root.top-y;
-        width: root.width - root.side-w - 3 * root.margin;
+        width: root.width - 2 * root.margin;
         height: 28px;
         border-radius: 10px;
         background: root.task-active ? Theme.accent.darker(0.5).with-alpha(0.9) : Theme.plate;
@@ -138,18 +149,18 @@ export component AutoPanel inherits Rectangle {
         }
     }
 
-    // 回収 (left) and what the robot remembers.
+    // Column 1: 回収, and 2 個同時に回収: gripper0 (左) takes the first block, gripper1 (右) the one below it.
     VerticalLayout {
         x: root.margin;
-        y: root.top-y + 28px + 4px;
-        width: 300px;
+        y: root.body-y;
+        width: root.col1-w;
         spacing: 4px;
         Panel {
             title: "回収 (0 が外周壁の側)";
             height: 118px;
             HorizontalLayout {
                 height: root.row-h;
-                spacing: 4px;
+                spacing: 3px;
                 for st[i] in root.blocks: Btn {
                     label: st == 1 ? "\{i}済" : "\{i}";
                     enabled: st == 0;
@@ -160,7 +171,7 @@ export component AutoPanel inherits Rectangle {
             }
             HorizontalLayout {
                 height: root.row-h;
-                spacing: 8px;
+                spacing: 6px;
                 SidePick { value <=> root.pick-gripper; }
                 Btn {
                     label: "回収";
@@ -168,6 +179,52 @@ export component AutoPanel inherits Rectangle {
                     active: root.can-pick;
                     enabled: root.can-pick;
                     clicked => { root.run-pick(root.pick-gripper, root.sel-block); }
+                }
+            }
+        }
+        Panel {
+            title: "2 個同時に回収 (左+右)";
+            height: 72px;
+            HorizontalLayout {
+                height: root.row-h;
+                spacing: 8px;
+                Btn { label: "4+3"; tint: Theme.ok; active: root.can-pair-43; enabled: root.can-pair-43; clicked => { root.run-pair(4); } }
+                Btn { label: "2+1"; tint: Theme.ok; active: root.can-pair-21; enabled: root.can-pair-21; clicked => { root.run-pair(2); } }
+            }
+        }
+    }
+
+    // Column 2: マスへ (the held block goes to the position and heading of a shelf column; the lift and the
+    // suction stay as they are, they are set by hand), and what the robot remembers.
+    VerticalLayout {
+        x: root.col2-x;
+        y: root.body-y;
+        width: root.col-w;
+        spacing: 4px;
+        Panel {
+            title: "マスへ (列)";
+            note: !root.hold-left && !root.hold-right ? "ブロックなし" : "";
+            height: 118px;
+            HorizontalLayout {
+                height: root.row-h;
+                spacing: 4px;
+                for c in root.columns: Btn {
+                    label: "列 \{c}";
+                    active: root.sel-column == c;
+                    min-width: 44px;
+                    clicked => { root.sel-column = c; }
+                }
+            }
+            HorizontalLayout {
+                height: root.row-h;
+                spacing: 6px;
+                SidePick { value <=> root.place-gripper; left-ok: root.hold-left; right-ok: root.hold-right; }
+                Btn {
+                    label: "マスへ";
+                    tint: Theme.ok;
+                    active: root.can-shelf-cell;
+                    enabled: root.can-shelf-cell;
+                    clicked => { root.run-shelf-cell(root.place-gripper, root.sel-column); }
                 }
             }
         }
@@ -180,12 +237,15 @@ export component AutoPanel inherits Rectangle {
             HorizontalLayout {
                 padding: 6px;
                 spacing: 6px;
-                Text { text: root.memory-text; color: Theme.text; font-size: 12px; vertical-alignment: center; overflow: elide; }
+                Text { text: root.memory-text; color: Theme.text; font-size: 11px; vertical-alignment: center; overflow: elide; }
                 Rectangle {
-                    width: 104px;
+                    width: 90px;
                     height: root.row-h + 8px;
                     border-radius: 8px;
                     clip: true;
+                    accessible-role: button;
+                    accessible-label: "忘れさせる";
+                    accessible-enabled: root.forget-enabled;
                     background: root.forget-enabled ? Theme.panel-hi : Theme.panel;
                     Rectangle {
                         x: 0;
@@ -196,7 +256,7 @@ export component AutoPanel inherits Rectangle {
                     Text {
                         text: root.forget-enabled ? "忘れさせる\n(1 秒長押し)" : "作業中は\n不可";
                         color: root.forget-enabled ? (root.forget-armed ? #000000 : Theme.text) : Theme.dim;
-                        font-size: 13px;
+                        font-size: 12px;
                         width: parent.width;
                         horizontal-alignment: center;
                         vertical-alignment: center;
@@ -215,84 +275,67 @@ export component AutoPanel inherits Rectangle {
         }
     }
 
-    // マスへ (right): the held block goes to the position and heading of a shelf column. The lift and the
-    // suction stay as they are; the lift is set and the suction released by hand.
+    // Column 3: the moves, or (after 経路を選ぶ) the paths: a second level for the less-used rows.
     Panel {
-        x: root.width - root.margin - self.width;
-        y: root.top-y;
-        width: root.side-w;
-        height: 120px;
-        title: "マスへ (列)";
-        note: !root.hold-left && !root.hold-right ? "ブロックなし" : "";
-        HorizontalLayout {
-            height: root.row-h;
-            spacing: 4px;
-            for c in root.columns: Btn {
-                label: "列 \{c}";
-                active: root.sel-column == c;
-                min-width: 52px;
-                clicked => { root.sel-column = c; }
+        x: root.col3-x;
+        y: root.body-y;
+        width: root.col-w;
+        height: 168px;
+        title: root.paths-open ? "経路" : "移動";
+        if !root.paths-open: VerticalLayout {
+            spacing: 3px;
+            HorizontalLayout {
+                height: root.row-h;
+                spacing: 4px;
+                Btn { label: "スタートへ"; enabled: root.usable; font: 12px; min-width: 44px; clicked => { root.run-move(2); } }
+                Btn { label: "棚の前へ"; enabled: root.usable; font: 12px; min-width: 44px; clicked => { root.run-move(7); } }
+            }
+            HorizontalLayout {
+                height: root.row-h;
+                spacing: 4px;
+                Btn { label: "スラロームの\n入口へ"; enabled: root.usable; font: 12px; min-width: 44px; clicked => { root.run-move(1); } }
+                Btn { label: "スラロームの\n出口へ"; enabled: root.usable; font: 12px; min-width: 44px; clicked => { root.run-move(6); } }
+            }
+            HorizontalLayout {
+                height: root.row-h;
+                spacing: 4px;
+                Btn { label: "スラローム\n往路"; enabled: root.usable; font: 12px; min-width: 44px; clicked => { root.run-move(3); } }
+                Btn { label: "スラローム\n復路"; enabled: root.usable; font: 12px; min-width: 44px; clicked => { root.run-move(4); } }
             }
         }
-        HorizontalLayout {
-            height: root.row-h;
-            spacing: 8px;
-            SidePick { value <=> root.place-gripper; left-ok: root.hold-left; right-ok: root.hold-right; }
-            Btn {
-                label: "マスへ";
-                tint: Theme.ok;
-                active: root.can-shelf-cell;
-                enabled: root.can-shelf-cell;
-                clicked => { root.run-shelf-cell(root.place-gripper, root.sel-column); }
+        // Two paths per row, up to six.
+        if root.paths-open: VerticalLayout {
+            spacing: 3px;
+            for r in min(3, (root.paths.length + 1) / 2): HorizontalLayout {
+                height: root.row-h;
+                spacing: 4px;
+                for k in 2: Rectangle {
+                    property <int> idx: r * 2 + k;
+                    if idx < root.paths.length: Btn {
+                        width: parent.width;
+                        height: parent.height;
+                        label: root.paths[idx];
+                        active: root.paths[idx] == root.active-path;
+                        enabled: root.usable;
+                        font: 12px;
+                        clicked => { root.start-path(root.paths[idx]); }
+                    }
+                }
             }
         }
     }
 
-    // 2 個同時に回収: gripper0 (左) takes the first block, gripper1 (右) the one below it.
-    Panel {
-        x: root.width - root.margin - self.width;
-        y: root.top-y + 124px;
-        width: root.side-w;
-        height: 72px;
-        title: "2 個同時に回収 (左+右)";
-        HorizontalLayout {
-            height: root.row-h;
-            spacing: 8px;
-            Btn { label: "4+3"; tint: Theme.ok; active: root.can-pair-43; enabled: root.can-pair-43; clicked => { root.run-pair(4); } }
-            Btn { label: "2+1"; tint: Theme.ok; active: root.can-pair-21; enabled: root.can-pair-21; clicked => { root.run-pair(2); } }
-        }
-    }
-
-    // Bottom: moves, then paths / follow / cancel / pose pick.
-    VerticalLayout {
+    // Bottom: one row of general buttons.
+    HorizontalLayout {
         x: root.margin;
         y: root.height - root.margin - self.height;
         width: root.width - 2 * root.margin;
-        height: 2 * root.row-h + 4px;
+        height: root.row-h;
         spacing: 4px;
-        HorizontalLayout {
-            spacing: 4px;
-            Btn { label: "スタートへ"; enabled: root.usable; font: 13px; min-width: 70px; clicked => { root.run-move(2); } }
-            Btn { label: "棚の前へ"; enabled: root.usable; font: 13px; min-width: 70px; clicked => { root.run-move(7); } }
-            Btn { label: "スラロームの入口へ"; enabled: root.usable; font: 13px; min-width: 70px; clicked => { root.run-move(1); } }
-            Btn { label: "スラロームの出口へ"; enabled: root.usable; font: 13px; min-width: 70px; clicked => { root.run-move(6); } }
-            Btn { label: "スラローム往路"; enabled: root.usable; font: 13px; min-width: 70px; clicked => { root.run-move(3); } }
-            Btn { label: "スラローム復路"; enabled: root.usable; font: 13px; min-width: 70px; clicked => { root.run-move(4); } }
-        }
-        HorizontalLayout {
-            spacing: 4px;
-            for p in root.paths: Btn {
-                label: p;
-                active: p == root.active-path;
-                enabled: root.usable;
-                font: 13px;
-                min-width: 64px;
-                clicked => { root.start-path(p); }
-            }
-            Btn { label: "経路の停止"; font: 13px; min-width: 84px; enabled: root.link-ok; tint: Theme.danger; clicked => { root.stop-path(); } }
-            Btn { label: root.tracker ? "追従 入" : "追従 切"; active: root.tracker; tint: Theme.ok; font: 13px; min-width: 66px; enabled: root.link-ok && (!root.stopped || root.tracker); clicked => { root.toggle-tracker(); } }
-            Btn { label: "取り消し"; active: root.task-active; tint: Theme.danger; font: 13px; min-width: 72px; enabled: root.task-active; clicked => { root.cancel(); } }
-            Btn { label: "地図で姿勢を指定"; font: 13px; min-width: 120px; enabled: root.link-ok; clicked => { root.pick-pose(); } }
-        }
+        Btn { label: "取り消し"; active: root.task-active; tint: Theme.danger; font: 13px; enabled: root.task-active; clicked => { root.cancel(); } }
+        Btn { label: "経路の停止"; font: 13px; enabled: root.link-ok; tint: Theme.danger; clicked => { root.stop-path(); } }
+        Btn { label: root.tracker ? "追従 入" : "追従 切"; active: root.tracker; tint: Theme.ok; font: 13px; enabled: root.link-ok && (!root.stopped || root.tracker); clicked => { root.toggle-tracker(); } }
+        Btn { label: "地図で姿勢を指定"; font: 13px; enabled: root.link-ok; clicked => { root.pick-pose(); } }
+        Btn { label: root.paths-open ? "移動へ戻る" : "経路を選ぶ"; active: root.paths-open; font: 13px; clicked => { root.paths-open = !root.paths-open; } }
     }
 }

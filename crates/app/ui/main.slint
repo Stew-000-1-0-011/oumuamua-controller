@@ -90,6 +90,8 @@ export component MainWindow inherits Window {
     in-out property <int> auto-place-gripper: 0;
     in-out property <int> auto-block: -1;
     in-out property <int> auto-column: -1;
+    in-out property <bool> auto-paths-open: false;
+    out property <float> auto-backdrop-alpha: auto-panel.backdrop-alpha;
     in property <string> auto-block-reason;
     in property <bool> auto-task-active: false;
     in property <string> auto-task-label;
@@ -246,7 +248,7 @@ export component MainWindow inherits Window {
         changed both => { root.manual-options-changed(); }
     }
 
-    AutoPanel {
+    auto-panel := AutoPanel {
         x: root.cx;
         y: root.cy;
         width: root.cw;
@@ -257,6 +259,7 @@ export component MainWindow inherits Window {
         place-gripper <=> root.auto-place-gripper;
         sel-block <=> root.auto-block;
         sel-column <=> root.auto-column;
+        paths-open <=> root.auto-paths-open;
         block-reason: root.auto-block-reason;
         task-active: root.auto-task-active;
         task-label: root.auto-task-label;

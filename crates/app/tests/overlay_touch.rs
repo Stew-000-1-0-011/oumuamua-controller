@@ -118,9 +118,9 @@ fn the_auto_button_opens_the_pick_and_やめる_closes_it_without_confirming() {
     win.set_page(2);
     elapse(50);
     let w = win.window();
-    // 地図で姿勢を指定: bottom row, right end.
-    touch(w, 630., 332., Started);
-    touch(w, 630., 332., Ended);
+    // 地図で姿勢を指定: bottom row, the fourth button.
+    touch(w, 480., 330., Started);
+    touch(w, 480., 330., Ended);
     elapse(50);
     assert_eq!(win.get_page(), 0);
     assert!(win.get_pose_pick());
