@@ -6,7 +6,7 @@ from rclpy.executors import ExternalShutdownException, MultiThreadedExecutor
 from rclpy.node import Node
 from rcl_interfaces.msg import ParameterDescriptor
 
-from .config import FIELD_KEYS, build_config, expand_env, from_ros_params
+from .config import FIELD_KEYS, ROBOT_SHAPE_KEYS, build_config, expand_env, from_ros_params
 from .ros_io import RosIoNode
 from .server import BridgeServer
 
@@ -22,7 +22,10 @@ def _read_params(node: Node) -> dict:
     for key in PARAM_KEYS:
         node.declare_parameter(key, None, any_type)
     params = {key: node.get_parameter(key).value for key in PARAM_KEYS}
-    missing = [key for key, value in params.items() if value is None]
+    for key in ROBOT_SHAPE_KEYS:  # optional: without them the map draws the robot_radius circle
+        node.declare_parameter(key, None, any_type)
+        params[key] = node.get_parameter(key).value
+    missing = [key for key, value in params.items() if value is None and key not in ROBOT_SHAPE_KEYS]
     if missing:
         raise RuntimeError("parameters not set (give them in the parameter file): " + ", ".join(missing))
     return params

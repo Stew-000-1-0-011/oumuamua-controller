@@ -53,7 +53,12 @@ def motor_snapshot(cmd, suction):
 
 
 PATHS = ["slalom_forward", "slalom_backward"]
-TASK_STAGES = {0: ["ブロックへ移動", "吸着", "持ち上げ"], 5: ["棚へ移動", "差し込み", "解放"]}
+# 0 PICK, 5 TO_SHELF_CELL, 7 TO_SHELF_FRONT, 8 PICK_PAIR (task_commander's RunTask.action). 5 and 7 only
+# move: the lift, the suction and what is held are not touched (the operator does those by hand).
+TASK_STAGES = {0: ["ブロックへ移動", "吸着", "持ち上げ"], 5: ["マスへ移動"], 7: ["棚の前へ移動"],
+               8: ["ブロックへ移動", "吸着", "持ち上げ"]}
+# PICK_PAIR blocks that have a pose in task_commander.yaml pick.pairs (gripper0 takes block, gripper1 block - 1).
+PAIR_BLOCKS = (4, 2)
 DEFAULT_STAGES = ["移動中", "到着"]
 
 
@@ -83,7 +88,7 @@ class FakeRosIo:
         self._lift = [dict(h=0.0, goal=0.0, moving=False, arrived=True, done=None) for _ in range(2)]
         self._task = None  # dict(kind, gripper, block, column, row, stages, i, t0, step, done)
         self._holding = [False, False]
-        self._picked, self._placed = [], []
+        self._picked = []
         self._path = []
         self._follow = None  # dict(t0, done) while a path run is active
 
@@ -132,9 +137,9 @@ class FakeRosIo:
         if t["kind"] == 0:
             self._holding[g] = True
             self._picked.append(t["block"])
-        elif t["kind"] == 5:
-            self._holding[g] = False
-            self._placed.append((t["column"], t["row"]))
+        elif t["kind"] == 8:
+            self._holding = [True, True]
+            self._picked += [t["block"], t["block"] - 1]
 
     @staticmethod
     def _run(fire):
@@ -143,9 +148,7 @@ class FakeRosIo:
 
     def _task_text(self):
         h = " ".join(f"gripper{i}={'yes' if v else 'no'}" for i, v in enumerate(self._holding))
-        cells = " ".join(f"({c},{r})" for c, r in self._placed)
-        return (f"holding: {h}\npicked blocks: {' '.join(str(b) for b in self._picked)}\n"
-                f"placed cells: {cells}")
+        return f"holding: {h}\npicked blocks: {' '.join(str(b) for b in self._picked)}"
 
     def _scan(self):
         x, y, yaw = self._pose
@@ -194,6 +197,9 @@ class FakeRosIo:
 
     def run_task(self, kind, gripper, block, column, row, step, done):
         stages = TASK_STAGES.get(kind, DEFAULT_STAGES)
+        if kind == 8 and block not in PAIR_BLOCKS:
+            done(False, f"no pose for the pair of blocks {block} and {block - 1}")
+            return
         with self._lock:
             if self._task is not None:
                 reject = True
@@ -215,12 +221,14 @@ class FakeRosIo:
     def task_reset(self, done):
         with self._lock:
             self._holding = [False, False]
-            self._picked, self._placed = [], []
+            self._picked = []
         done(True, "")
 
     def set_suction(self, gripper, on, done):
         with self._lock:
             self._suction[gripper] = bool(on)
+            if not on:  # like task_commander: releasing a holding gripper's suction drops what it held
+                self._holding[gripper] = False
         done(True, "")
 
     def lift_to(self, gripper, height, done):

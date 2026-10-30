@@ -15,6 +15,8 @@ CONFIG = {
     "field_obstacles": [-0.905, 0.0225, -0.865, 0.8905],
     "shelf": [1.5625, -0.30, 2.5025, 0.30], "start_pose": [-2.2, 1.3, 0.0],
     "robot_radius": 0.32, "completion_setup_files": [],
+    "footprint": [0.16, -0.2, 0.16, 0.2, -0.33, 0.05, -0.33, -0.05],
+    "suction_offsets": [0.269, 0.12, 0.269, -0.12],
 }
 
 
@@ -135,8 +137,10 @@ def test_hello_welcome_and_initial_burst(env):
     assert cfg[1] == "oum" and cfg[2] == ["slalom", "start"] and cfg[4] == 0.85
     field = p.rels(P.FIELD)[0]
     assert len(field[1]) == 4 and len(field[2]) == 1 and field[4] == [-2.2, 1.3, 0.0] and field[5] == 0.32
+    assert field[6] == [[0.16, -0.2], [0.16, 0.2], [-0.33, 0.05], [-0.33, -0.05]]
+    assert field[7] == [[0.269, 0.12], [0.269, -0.12]]
     mem = p.rels(P.TASK_MEMORY)[0]
-    assert mem[1] == [True, False] and mem[2] == [1, 2]
+    assert mem[1] == [True, False] and mem[2] == [1, 2] and mem[3] == []
 
 
 def test_second_client_busy_then_takeover_sends_bye(env):
@@ -367,11 +371,12 @@ def test_decimate_keeps_ends_and_limit():
 def test_default_field_and_long_path_fit_one_datagram():
     from oumuamua_controller_bridge import fake_robot as F
     from oumuamua_controller_bridge.server import (
-        MAX_DATAGRAM, _box, _obstacle_boxes, decimate)
+        MAX_DATAGRAM, _box, _obstacle_boxes, _points, decimate)
 
     c = F.expand_env(F.DEFAULT_CONFIG)
     field = [P.FIELD, _box(c["field_bounds"]), _obstacle_boxes(c.get("field_obstacles")),
-             _box(c["shelf"]), list(c["start_pose"]), float(c["robot_radius"])]
+             _box(c["shelf"]), list(c["start_pose"]), float(c["robot_radius"]),
+             _points(c["footprint"]), _points(c["suction_offsets"])]
     assert len(P.encode([P.REL, 0xFFFFFFFF, 0xFFFFFFFF, field])) <= MAX_DATAGRAM
     pts = decimate([(i * 0.01, 0.0) for i in range(483)], P.MAX_POINTS_PER_SCAN)
     shape = [P.PATH_SHAPE, "long_path_name", P.pack_points(pts)[0]]
@@ -473,3 +478,23 @@ def test_state_carries_five_motors_with_detail_and_fits_a_datagram(env):
     assert body[4][2][1] is False and body[4][2][4] == P.MODE_FAULT
     assert body[4][4][2:4] == [6.0, -29.0]
     assert len(P.encode(raw_states[-1])) <= 1200
+
+
+def test_task_memory_never_sends_placed_cells(env):
+    io, srv, mk = env
+    io.snap = Snapshot(task_text="holding: g0=no g1=no\npicked blocks: 0\nplaced cells (column, row): (1, 1)")
+    p = mk()
+    p.connect()
+    p.wait(lambda: len(p.rels(P.TASK_MEMORY)) >= 1)
+    assert p.rels(P.TASK_MEMORY)[0][3] == []
+
+
+def test_field_without_a_shape_sends_empty_lists(env):
+    io, srv, mk = env
+    for k in ("footprint", "suction_offsets"):
+        srv.config.pop(k, None)
+    p = mk()
+    p.connect()
+    p.wait(lambda: len(p.rels(P.FIELD)) >= 1)
+    field = p.rels(P.FIELD)[0]
+    assert field[5] == 0.32 and field[6] == [] and field[7] == []

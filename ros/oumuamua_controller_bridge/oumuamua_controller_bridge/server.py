@@ -80,6 +80,12 @@ def _box(b) -> list:
     return [float(v) for v in b]
 
 
+def _points(flat) -> list:
+    """A flat [x0, y0, x1, y1, ...] list -> [[x, y], ...] (empty when absent or odd)."""
+    flat = [float(v) for v in flat or []]
+    return [[flat[i], flat[i + 1]] for i in range(0, len(flat) - 1, 2)]
+
+
 def _obstacle_boxes(obstacles) -> list:
     """Config obstacles: a list of boxes or a flat list of 4n numbers -> [[xmin, ymin, xmax, ymax]]."""
     flat = list(obstacles or [])
@@ -250,7 +256,8 @@ class BridgeServer:
             [P.FIELD, _box(c.get("field_bounds", [0, 0, 0, 0])),
              _obstacle_boxes(c.get("field_obstacles")),
              _box(c.get("shelf", [0, 0, 0, 0])), list(c.get("start_pose", [0, 0, 0])),
-             float(c.get("robot_radius", 0.32))],
+             float(c.get("robot_radius", 0.32)),
+             _points(c.get("footprint")), _points(c.get("suction_offsets"))],
             self._path_shape_msg(snap),
             self._task_memory_msg(snap.task_text),
         ]
@@ -274,8 +281,8 @@ class BridgeServer:
 
     @staticmethod
     def _task_memory_msg(text) -> list:
-        holding, picked, placed = task_memory.parse(text or "")
-        return [P.TASK_MEMORY, list(holding), list(picked), [list(c) for c in placed]]
+        holding, picked = task_memory.parse(text or "")
+        return [P.TASK_MEMORY, list(holding), list(picked), []]  # placed cells: no longer kept (always empty)
 
     # -- receive --------------------------------------------------------
     def _on_datagram(self, data: bytes, addr, now: float) -> None:

@@ -2,14 +2,17 @@
 import re
 
 _HOLD = re.compile(r"=(yes|no)\b")
-_CELL = re.compile(r"\(\s*(\d+)\s*,\s*(\d+)\s*\)")
 
 
 def parse(text: str):
-    """Return (holding [gripper0, gripper1], picked block ids, placed (column, row) cells)."""
+    """Return (holding [gripper0, gripper1], picked block ids).
+
+    task_commander no longer remembers placed cells (the state has no "placed cells" line), so there is
+    nothing to parse for them: the TASK_MEMORY message still carries a `placed` list for wire compatibility
+    and the bridge always sends it empty (server.py). An old robot's "placed cells" line is ignored.
+    """
     holding = [False, False]
     picked = []
-    placed = []
     for line in text.splitlines():
         if line.startswith("holding:"):
             vals = [m == "yes" for m in _HOLD.findall(line)]
@@ -17,7 +20,4 @@ def parse(text: str):
                 holding[i] = v
         elif line.startswith("picked blocks:"):
             picked = [int(t) for t in line.split(":", 1)[1].split() if t.isdigit()]
-        elif line.startswith("placed cells"):
-            body = line.split(":", 1)[1]
-            placed = [(int(c), int(r)) for c, r in _CELL.findall(body)]
-    return holding, picked, placed
+    return holding, picked

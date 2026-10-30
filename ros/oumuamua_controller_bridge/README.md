@@ -17,13 +17,21 @@ the node has no defaults, so every parameter must be in that file (lists of pair
 nest lists; `config.build_config()` rebuilds them). `$ROS_DISTRO` in `completion_setup_files` is
 expanded at start-up.
 
+The robot's shape for the map (not required): `footprint` (the outline polygon, flat `x0, y0, x1, y1, ...`, robot frame
+with x forward and y left) and `grippers.suction_offsets` (`[x0, y0, x1, y1]`, gripper0 = left first), the same
+names and values as in `task_commander.yaml`. Those keys sit under the `task_commander` node there, so ROS would not
+hand them to the bridge; `bridge.launch.py` therefore reads them out of `task_commander.yaml` itself (launch argument
+`robot:=`, default `<oumuamua_bringup>/config/task_commander.yaml`) and passes them as parameters.
+Keys in `controller_bridge.yaml` win. Without them the FIELD message carries empty lists and the map
+draws a `robot_radius` circle.
+
 ## Run without ROS (simulated robot)
 
     python3 -m oumuamua_controller_bridge.fake_robot [--port 47800]
 
 Runs `BridgeServer` on `FakeRosIo` (planar cmd_vel integration, 1 s per task stage, lift 0.05 m/s,
 LiDAR against the outer walls). Its `DEFAULT_CONFIG` mirrors `controller_bridge.yaml`;
-`test_fake_robot.py::test_default_config_matches_bridge_yaml` keeps them equal (skipped outside the oumuamua workspace).
+`test_fake_robot.py::test_default_config_matches_bridge_yaml` keeps them equal (skipped outside the oumuamua workspace; it also compares `footprint` and `suction_offsets` with `task_commander.yaml`).
 
 ## Tests
 
