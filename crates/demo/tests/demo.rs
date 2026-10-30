@@ -105,8 +105,9 @@ fn release_then_drive_forward_moves_the_robot() {
         std::thread::sleep(Duration::from_millis(30));
     }
     c.set_control(ControlInput::default());
-    let x1 = p.state(1.0, |s| s.pose.is_some_and(|q| q[0] > x0 + 0.2)).pose.unwrap()[0];
-    assert!(x1 > x0 + 0.2);
+    // The robot starts facing -x (its front, the gripper side, points to the start zone), so forward is -x.
+    let x1 = p.state(1.0, |s| s.pose.is_some_and(|q| q[0] < x0 - 0.2)).pose.unwrap()[0];
+    assert!(x1 < x0 - 0.2);
 }
 
 #[test]

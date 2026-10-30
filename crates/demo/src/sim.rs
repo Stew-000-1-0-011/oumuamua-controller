@@ -10,12 +10,12 @@ pub const PATHS: [&str; 2] = ["slalom_forward", "slalom_backward"];
 pub const LIFT_PRESETS: [(&str, f64); 4] = [("下段", 0.01), ("中段", 0.35), ("上段", 0.69), ("0 点", 0.0)];
 pub const LIFT_MAX: f64 = 0.85;
 pub const SPEED_LEVELS: [(f64, f64); 3] = [(0.3, 1.0), (0.8, 1.8), (1.5, 2.5)];
-pub const BLOCKS: u8 = 6;
+pub const BLOCKS: u8 = 5;
 pub const COLUMNS: u8 = 3;
 pub const ROWS: u8 = 3;
-pub const BOUNDS: [f64; 4] = [-2.786, -1.655, 2.786, 1.655];
+pub const BOUNDS: [f64; 4] = [-2.785, -1.655, 2.785, 1.655];
 pub const SHELF: [f64; 4] = [1.5625, -0.30, 2.5025, 0.30];
-pub const START: [f64; 3] = [-2.2, 1.3, 0.0];
+pub const START: [f64; 3] = [-2.2, 1.3, std::f64::consts::PI];
 pub const ROBOT_RADIUS: f64 = 0.32;
 // Motor model: the same as `motor_snapshot` in fake_robot.py (a test keeps the constants equal).
 // Wheel i sits at 90 + 120 i degrees; its speed is the body velocity along its rolling direction
@@ -29,20 +29,19 @@ pub const SUCTION_RAD_S: f64 = 300.0;
 pub const VDC_NOMINAL: f64 = 24.0;
 pub const VDC_SAG_PER_A: f64 = 0.05;
 pub const MOTOR_NAMES: [&str; 5] = ["車輪0", "車輪1", "車輪2", "吸引 左", "吸引 右"];
-pub const OBSTACLES: [[f64; 4]; 13] = [
-    [-2.8025, -0.0165, 1.5625, 0.0165],
-    [-0.8375, 0.019, -0.8045, 0.8905],
-    [-0.8375, -0.8905, -0.8045, -0.019],
-    [-1.5955, 1.069, -1.5625, 1.669],
-    [-1.5955, -1.669, -1.5625, -1.069],
-    [-1.5955, 0.0165, -1.5625, 0.2665],
-    [-1.5955, -0.2665, -1.5625, -0.0165],
-    [0.0045, 0.8715, 0.0375, 1.6715],
-    [0.0045, -1.6715, 0.0375, -0.8715],
-    [0.8045, 0.019, 0.8375, 0.8905],
-    [0.8045, -0.8905, 0.8375, -0.019],
-    [2.5025, -0.0165, 2.8025, 0.0165],
-    [1.5625, -0.30, 2.5025, 0.30],
+pub const OBSTACLES: [[f64; 4]; 12] = [
+    [-2.8025, -0.02, 1.5625, 0.02],
+    [-0.905, 0.0225, -0.865, 0.8905],
+    [-0.905, -0.8905, -0.865, -0.0225],
+    [-1.735, 1.069, -1.695, 1.669],
+    [-1.735, -1.669, -1.695, -1.069],
+    [-1.599, -0.2665, -1.559, -0.02],
+    [-0.065, 0.8715, -0.025, 1.6715],
+    [-0.065, -1.6715, -0.025, -0.8715],
+    [0.765, 0.0225, 0.805, 0.8905],
+    [0.765, -0.8905, 0.805, -0.0225],
+    [2.5025, -0.02, 2.8025, 0.02],
+    [1.5625, -0.3, 2.5025, 0.3],
 ];
 
 const LIFT_SPEED: f64 = 0.05; // m/s
@@ -386,8 +385,8 @@ mod tests {
         assert_eq!(s.scan().len(), 360);
         s.pose = [0.0, 1.0, 0.0];
         let pts = s.scan();
-        // Ray 0 is straight +x: it meets the right wall at x = 2.786 (the shelf is at y <= 0.3).
-        assert_eq!(pts[0], (2786, 1000));
+        // Ray 0 is straight +x: it meets the right wall at x = 2.785 (the shelf is at y <= 0.3).
+        assert_eq!(pts[0], (2785, 1000));
         s.pose = [0.0, 0.0, 0.0];
         assert_eq!(s.scan()[0].0, 1563); // shelf front face (1.5625 m, rounded)
     }

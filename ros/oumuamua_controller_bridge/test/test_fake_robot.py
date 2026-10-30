@@ -49,8 +49,8 @@ def test_fake_scan_hits_walls():
     io.set_pose(0.0, 0.0, 0.0)
     scan = io.snapshot().scan
     assert len(scan) == 360
-    east = min(scan, key=lambda p: abs(p[1]) + abs(p[0] - 2.786))
-    assert abs(east[0] - 2.786) < 0.01 and abs(east[1]) < 0.01
+    east = min(scan, key=lambda p: abs(p[1]) + abs(p[0] - 2.785))
+    assert abs(east[0] - 2.785) < 0.01 and abs(east[1]) < 0.01
 
 
 def test_fake_task_completes():

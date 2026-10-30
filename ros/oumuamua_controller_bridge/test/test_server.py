@@ -9,10 +9,10 @@ from oumuamua_controller_bridge.rosio import Snapshot
 from oumuamua_controller_bridge.server import BridgeServer
 
 CONFIG = {
-    "robot_name": "oum", "lift_presets": [["下段", 0.01], ["上段", 0.69]], "lift_max": 0.19,
-    "speed_levels": [[0.3, 1.0], [0.8, 1.8], [1.5, 2.5]], "blocks": 6, "columns": 3, "rows": 3,
-    "field_bounds": [-2.786, -1.655, 2.786, 1.655],
-    "field_obstacles": [-0.8375, 0.019, -0.8045, 0.8905],
+    "robot_name": "oum", "lift_presets": [["下段", 0.01], ["上段", 0.69]], "lift_max": 0.85,
+    "speed_levels": [[0.3, 1.0], [0.8, 1.8], [1.5, 2.5]], "blocks": 5, "columns": 3, "rows": 3,
+    "field_bounds": [-2.785, -1.655, 2.785, 1.655],
+    "field_obstacles": [-0.905, 0.0225, -0.865, 0.8905],
     "shelf": [1.5625, -0.30, 2.5025, 0.30], "start_pose": [-2.2, 1.3, 0.0],
     "robot_radius": 0.32, "completion_setup_files": [],
 }
@@ -132,7 +132,7 @@ def test_hello_welcome_and_initial_burst(env):
     types = [m[0] for m in p.rel_msgs]
     assert types[:4] == [P.CONFIG, P.FIELD, P.PATH_SHAPE, P.TASK_MEMORY]
     cfg = p.rels(P.CONFIG)[0]
-    assert cfg[1] == "oum" and cfg[2] == ["slalom", "start"] and cfg[4] == 0.19
+    assert cfg[1] == "oum" and cfg[2] == ["slalom", "start"] and cfg[4] == 0.85
     field = p.rels(P.FIELD)[0]
     assert len(field[1]) == 4 and len(field[2]) == 1 and field[4] == [-2.2, 1.3, 0.0] and field[5] == 0.32
     mem = p.rels(P.TASK_MEMORY)[0]
