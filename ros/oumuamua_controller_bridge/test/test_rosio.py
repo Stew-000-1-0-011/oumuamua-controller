@@ -1,10 +1,11 @@
 """The ROS-free half of the motor snapshot: Status fields -> snapshot entry -> STATE row."""
+import math
 from types import SimpleNamespace
 
 import pytest
 
 from oumuamua_controller_bridge import protocol as P
-from oumuamua_controller_bridge.rosio import motor_entry, motor_fields
+from oumuamua_controller_bridge.rosio import floor_rotation, motor_entry, motor_fields
 
 
 def status(**kw):
@@ -38,3 +39,27 @@ def test_entry_becomes_a_state_row():
     assert row == [23.5, True, 1.5, -20.0, 2, 2, "吸引 左"]
     assert P.encode(row)
     assert pytest.approx(row[0]) == 23.5
+
+
+def quat(roll, yaw):
+    """Quaternion of R = Rz(yaw) Rx(roll), as static_transform_publisher builds it."""
+    cr, sr, cy, sy = math.cos(roll / 2), math.sin(roll / 2), math.cos(yaw / 2), math.sin(yaw / 2)
+    return SimpleNamespace(w=cr * cy, x=sr * cy, y=sr * sy, z=cr * sy)
+
+
+def apply(rot, p):
+    xx, xy, yx, yy = rot
+    return (xx * p[0] + xy * p[1], yx * p[0] + yy * p[1])
+
+
+def test_floor_rotation_is_the_yaw_rotation_for_an_upright_lidar():
+    assert apply(floor_rotation(quat(0.0, math.pi / 2)), (1.0, 0.0)) == pytest.approx((0.0, 1.0), abs=1e-12)
+    assert apply(floor_rotation(quat(0.0, math.pi / 2)), (0.0, 1.0)) == pytest.approx((-1.0, 0.0), abs=1e-12)
+
+
+def test_floor_rotation_keeps_the_mirror_of_an_upside_down_lidar():
+    # oumuamua: lidar_yaw = pi, upside down (roll pi). The scan's +x is the robot's -x,
+    # and its +y stays the robot's +y (the yaw would flip it, the roll flips it back)
+    rot = floor_rotation(quat(math.pi, math.pi))
+    assert apply(rot, (1.0, 0.0)) == pytest.approx((-1.0, 0.0), abs=1e-12)
+    assert apply(rot, (0.0, 1.0)) == pytest.approx((0.0, 1.0), abs=1e-12)

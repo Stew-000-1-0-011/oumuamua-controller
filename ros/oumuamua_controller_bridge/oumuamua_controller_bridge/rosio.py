@@ -38,6 +38,15 @@ def motor_entry(fields: Optional[tuple], fresh: bool) -> tuple:
     return (vdc, fresh and mode != P.MODE_FAULT, current, velocity, mode, flags)
 
 
+def floor_rotation(q) -> tuple:
+    """Top-left 2x2 of the rotation matrix of quaternion `q`, as (xx, xy, yx, yy): maps a point in the
+    scan plane onto the floor. Unlike the yaw alone, it keeps the mirror of an upside-down LiDAR
+    (roll pi), which would otherwise draw the scan flipped left to right."""
+    w, x, y, z = q.w, q.x, q.y, q.z
+    return (1.0 - 2.0 * (y * y + z * z), 2.0 * (x * y - w * z),
+            2.0 * (x * y + w * z), 1.0 - 2.0 * (x * x + z * z))
+
+
 class RosIo(Protocol):
     def publish_cmd_vel(self, vx: float, vy: float, wz: float) -> None: ...
     def stop_path(self, done: Done) -> None: ...

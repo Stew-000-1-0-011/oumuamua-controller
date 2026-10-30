@@ -34,7 +34,7 @@ from tf2_ros import Buffer, TransformListener
 
 from . import protocol as P
 from .guards import REPLY_TIMEOUT_S, Watchdog, once, with_timeout
-from .rosio import Done, Snapshot, motor_entry, motor_fields
+from .rosio import Done, Snapshot, floor_rotation, motor_entry, motor_fields
 
 WHEEL_COUNT = P.WHEEL_COUNT
 SUCTION_COUNT = P.SUCTION_COUNT
@@ -162,7 +162,8 @@ class RosIoNode(Node):
         notify([P.LOG, stamp_ms, int(m.level), str(m.name), str(m.msg)])
 
     def _on_scan(self, m: LaserScan):
-        """Ranges -> `field` frame (every 2nd valid point). No TF yet: publish no points."""
+        """Ranges -> `field` frame (every 2nd valid point). No TF yet: publish no points.
+        Uses the whole rotation, not just the yaw: the LiDAR is mounted upside down (roll pi)."""
         tf = None
         for stamp in (Time.from_msg(m.header.stamp), Time()):  # at scan time, then latest
             try:
@@ -176,8 +177,7 @@ class RosIoNode(Node):
                 self._scan = []
             return
         t = tf.transform
-        yaw = _yaw_of(t.rotation)
-        c, s = math.cos(yaw), math.sin(yaw)
+        xx, xy, yx, yy = floor_rotation(t.rotation)
         tx, ty = t.translation.x, t.translation.y
         pts = []
         for k in range(0, len(m.ranges), 2):
@@ -186,7 +186,7 @@ class RosIoNode(Node):
                 continue
             a = m.angle_min + k * m.angle_increment
             x, y = r * math.cos(a), r * math.sin(a)
-            pts.append((tx + c * x - s * y, ty + s * x + c * y))
+            pts.append((tx + xx * x + xy * y, ty + yx * x + yy * y))
         with self._lock:
             self._scan = pts
 
