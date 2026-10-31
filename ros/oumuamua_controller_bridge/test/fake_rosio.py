@@ -58,6 +58,13 @@ class FakeRosIo:
         self.calls.append(("task_reset",))
         self._finish("task_reset", done)
 
+    def publish_harite(self, velocity):
+        self.calls.append(("harite", velocity))
+
+    def set_harite_enabled(self, on, done):
+        self.calls.append(("harite_enable", on))
+        self._finish("harite_enable", done)
+
     def set_suction(self, gripper, on, done):
         self.calls.append(("set_suction", gripper, on))
         self._finish(("set_suction", gripper), done)
@@ -80,4 +87,7 @@ class FakeRosIo:
         return list(self.names)
 
     def non_vel(self):
-        return [c for c in self.calls if c[0] != "cmd_vel"]
+        return [c for c in self.calls if c[0] not in ("cmd_vel", "harite")]
+
+    def harite_values(self):
+        return [c[1] for c in self.calls if c[0] == "harite"]

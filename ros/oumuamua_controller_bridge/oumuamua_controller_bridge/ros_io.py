@@ -27,13 +27,14 @@ from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy, qos_profile_sensor_data
 from rclpy.time import Time
 from sensor_msgs.msg import LaserScan
-from std_msgs.msg import String
+from std_msgs.msg import Float64, String
 from std_srvs.srv import SetBool, Trigger
 from task_commander.action import RunTask
 from tf2_ros import Buffer, TransformListener
 
 from . import protocol as P
 from .guards import REPLY_TIMEOUT_S, Watchdog, once, with_timeout
+from .harite import command_value
 from .rosio import Done, Snapshot, floor_rotation, motor_entry, motor_fields
 
 WHEEL_COUNT = P.WHEEL_COUNT
@@ -87,6 +88,7 @@ class RosIoNode(Node):
         self._path = []
         self._task_text = None
         self._tracker_enabled = False
+        self._harite_command = None
         self._task_goal: Optional[_Goal] = None
         self._lift_goals = [None] * GRIPPER_COUNT
         self._follow_goal: Optional[_Goal] = None
@@ -97,6 +99,7 @@ class RosIoNode(Node):
         g = self._cbg
         self._cmd_pub = self.create_publisher(TwistStamped, "/cmd_vel", 10)
         self._pose_pub = self.create_publisher(PoseWithCovarianceStamped, "/initialpose", 10)
+        self._harite_pub = self.create_publisher(Float64, "/harite/target_velocity", 10)
 
         self.create_subscription(Odometry, "/state_estimator/odom", self._on_odom, 10,
                                  callback_group=g)
@@ -105,6 +108,8 @@ class RosIoNode(Node):
         self.create_subscription(PathMsg, "/path_follower/path", self._on_path, LATCHED,
                                  callback_group=g)
         self.create_subscription(String, "/task_commander/state", self._on_task_state, LATCHED,
+                                 callback_group=g)
+        self.create_subscription(Float64, "/harite/command", self._on_harite_command, 10,
                                  callback_group=g)
         self.create_subscription(Log, "/rosout", self._on_rosout, ROSOUT_QOS, callback_group=g)
         topics = ([f"/wheel{i}/status" for i in range(WHEEL_COUNT)]
@@ -119,6 +124,7 @@ class RosIoNode(Node):
         self._stop_cli = self.create_client(Trigger, "/path_follower/stop", callback_group=g)
         self._reset_cli = self.create_client(Trigger, "/task_commander/reset", callback_group=g)
         self._tracker_cli = self.create_client(SetBool, "/tracker_node/enable", callback_group=g)
+        self._harite_cli = self.create_client(SetBool, "/harite/enable", callback_group=g)
         self._suction_cli = [self.create_client(SetBool, f"/gripper{i}/set_suction",
                                                 callback_group=g) for i in range(GRIPPER_COUNT)]
         self._zero_cli = [self.create_client(Trigger, f"/gripper{i}/zero_lift", callback_group=g)
@@ -144,6 +150,10 @@ class RosIoNode(Node):
         with self._lock:
             self._grippers[i] = (m.lift_height, m.lift_goal, m.lift_moving, m.lift_arrived,
                                  m.suction_on, m.lift_feedback)
+
+    def _on_harite_command(self, m: Float64):
+        with self._lock:
+            self._harite_command = command_value(m.data)
 
     def _on_path(self, m: PathMsg):
         pts = [(ps.pose.position.x, ps.pose.position.y) for ps in m.poses]
@@ -197,6 +207,11 @@ class RosIoNode(Node):
         msg.header.frame_id = BASE_FRAME
         msg.twist.linear.x, msg.twist.linear.y, msg.twist.angular.z = vx, vy, wz
         self._cmd_pub.publish(msg)
+
+    def publish_harite(self, velocity: float) -> None:
+        msg = Float64()
+        msg.data = float(velocity)
+        self._harite_pub.publish(msg)
 
     def set_pose(self, x: float, y: float, yaw: float) -> None:
         msg = PoseWithCovarianceStamped()
@@ -282,6 +297,11 @@ class RosIoNode(Node):
                 self._tracker_enabled = bool(on)
 
         self._call(self._tracker_cli, req, "/tracker_node/enable", done, remember)
+
+    def set_harite_enabled(self, on: bool, done: Done) -> None:
+        req = SetBool.Request()
+        req.data = bool(on)
+        self._call(self._harite_cli, req, "/harite/enable", done)
 
     def task_reset(self, done: Done) -> None:
         self._call(self._reset_cli, Trigger.Request(), "/task_commander/reset", done)
@@ -447,7 +467,8 @@ class RosIoNode(Node):
             return Snapshot(pose=self._pose, vel=self._vel, wheels=wheels,
                             grippers=list(self._grippers), scan=list(self._scan),
                             path=list(self._path), task_text=self._task_text,
-                            tracker_enabled=self._tracker_enabled)
+                            tracker_enabled=self._tracker_enabled,
+                            harite_command=self._harite_command)
 
     def path_names(self) -> list:
         names = []

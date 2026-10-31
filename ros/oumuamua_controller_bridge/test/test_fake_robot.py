@@ -4,7 +4,7 @@ import pytest
 from pathlib import Path
 
 from oumuamua_controller_bridge.config import (
-    DEFAULTS, build_config, from_ros_params, parse_simple_yaml, robot_shape_from_text)
+    DEFAULTS, HARITE_KEYS, build_config, from_ros_params, parse_simple_yaml, robot_shape_from_text)
 from oumuamua_controller_bridge.fake_robot import FakeRosIo
 
 # The bridge's parameter file is in oumuamua_bringup (the bridge has no defaults). When this repository is
@@ -118,7 +118,11 @@ def test_default_config_matches_bridge_yaml():
     # a copy in controller_bridge.yaml, if any, wins
     if TASK_COMMANDER_YAML.exists():
         params = robot_shape_from_text(TASK_COMMANDER_YAML.read_text(encoding="utf-8")) | params
-    assert build_config(from_ros_params(params)) == DEFAULTS
+    # harite_* depend on the mount (harite_reversed) and are optional: the fake's values are only the defaults
+    built = build_config(from_ros_params(params))
+    for key in HARITE_KEYS:
+        assert built.pop(key) is not None
+    assert built == {k: v for k, v in DEFAULTS.items() if k not in HARITE_KEYS}
 
 
 def test_fake_path_run_finishes_after_a_few_seconds():
@@ -258,3 +262,24 @@ def test_robot_shape_is_read_out_of_task_commander_yaml_text():
     assert robot_shape_from_text(text) == {"footprint": [0.1, -0.2, 0.3, 0.4],
                                            "grippers.suction_offsets": [0.269, 0.12, 0.269, -0.12]}
     assert robot_shape_from_text("task_commander:\n  ros__parameters:\n    x: 1\n") == {}
+
+
+def test_fake_harite_echoes_the_command_like_the_node():
+    io, clk = make()
+    assert io.snapshot().harite_command is None, "nothing heard yet"
+    io.publish_harite(30.0)
+    assert io.snapshot().harite_command == 30.0
+    io.publish_harite(-250.0)
+    assert io.snapshot().harite_command == -100.0, "clamped to max_velocity"
+    out = []
+    io.set_harite_enabled(False, lambda ok, m: out.append(ok))
+    assert out == [True] and io.snapshot().harite_command == 0.0, "disabling sends 0"
+    io.publish_harite(30.0)
+    assert io.snapshot().harite_command == 0.0, "a command is dropped while disabled"
+    io.set_harite_enabled(True, lambda ok, m: None)
+    io.publish_harite(10.0)
+    assert io.snapshot().harite_command == 10.0
+
+
+def test_fake_harite_defaults():
+    assert (DEFAULTS["harite_enabled"], DEFAULTS["harite_speed"], DEFAULTS["harite_reversed"]) == (True, 30.0, False)

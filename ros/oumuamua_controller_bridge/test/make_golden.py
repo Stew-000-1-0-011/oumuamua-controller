@@ -19,8 +19,9 @@ STATE_FULL = [
     [3, "grab", [0, -1, 2, 1]],
     ["lane_a", True],
     True,
+    -12.5,  # harite_command (trailing, optional)
 ]
-STATE_EMPTY = [2, "link lost", None, None, [], [None, None], None, None, False]
+STATE_EMPTY = [2, "link lost", None, None, [], [None, None], None, None, False, None]
 
 POINTS = struct.pack("<8h", 1500, -250, 0, 32767, -32767, 1, 3, -4)
 SHELL_DATA = b"ls -la\n\x03\xff\x00"
@@ -28,7 +29,7 @@ SHELL_DATA = b"ls -la\n\x03\xff\x00"
 DATAGRAMS = {
     "hello": [p.HELLO, S, "pixel", False, None],
     "welcome": [p.WELCOME, S, "oumuamua", True, ""],
-    "control": [p.CONTROL, S, 7, 123456, 0.5, -1.25, 0.0, True, -1, 1, False],
+    "control": [p.CONTROL, S, 7, 123456, 0.5, -1.25, 0.0, True, -1, 1, False, 1],  # ... estop, jog_harite (trailing)
     "state_full": [p.STATE, S, 42, 7, 123456, STATE_FULL],
     "state_empty": [p.STATE, S, 43, 0, 0, STATE_EMPTY],
     "scan": [p.SCAN, S, 9, 0, 1, POINTS],
@@ -58,7 +59,7 @@ MSGS = {
     "config": [
         p.CONFIG, "oumuamua", ["lane_a", "lane_b"],
         [["low", 0.25], ["high", 0.75]], 1.5,
-        [[0.5, 1.0], [1.0, 1.5], [2.0, 2.5]], 4, 3, 2,
+        [[0.5, 1.0], [1.0, 1.5], [2.0, 2.5]], 4, 3, 2, True,  # harite (trailing)
     ],
     "field": [
         p.FIELD, [-3.0, -2.0, 3.0, 2.0], [[-1.0, -0.5, -0.5, 0.5], [0.0, 1.0, 0.25, 1.5]],

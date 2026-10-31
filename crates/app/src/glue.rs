@@ -422,6 +422,33 @@ impl Glue {
         self.sync_manual();
     }
 
+    /// ハリテ ▲/▼ held (`dir` +1 up, -1 down): like the lift jogs, refused while stopped, and only when
+    /// the bridge says it drives harite.
+    fn manual_harite(&mut self, dir: i32) {
+        if self.manual_allowed() && !self.actuation_blocked() && self.harite_enabled() {
+            self.manual.harite_press(dir.clamp(-1, 1) as i8);
+        }
+        self.sync_manual();
+    }
+
+    /// The held ハリテ direction (tests).
+    #[cfg(test)]
+    fn manual_harite_intent(&self) -> i8 {
+        let mut c = ControlInput::default();
+        self.manual.apply(&mut c, &self.levels(), true);
+        c.jog_harite
+    }
+
+    fn manual_harite_released(&mut self) {
+        self.manual.harite_release();
+        self.sync_manual();
+    }
+
+    /// CONFIG says the bridge drives harite (an older bridge, or none yet, says no).
+    fn harite_enabled(&self) -> bool {
+        self.model.config().is_some_and(|c| c.harite)
+    }
+
     fn manual_options(&mut self) {
         let Some(w) = self.window.upgrade() else { return };
         self.manual.level = w.get_manual_level().clamp(0, 2) as usize;
@@ -525,6 +552,8 @@ impl Glue {
         w.set_manual_left_suction(grippers[0].is_some_and(|g| g.suction));
         w.set_manual_right_suction(grippers[1].is_some_and(|g| g.suction));
         w.set_manual_reset_enabled(!self.lift_moving() && !self.actuation_blocked());
+        w.set_manual_harite_visible(self.harite_enabled());
+        w.set_manual_harite_text(manual::harite_text(state.and_then(|s| s.harite_command)).into());
         let (lv, wv) = self.manual.level_pair(&self.levels());
         w.set_manual_speed_text(format!("並進 {lv:.1} m/s  旋回 {wv:.1} rad/s").into());
         w.set_manual_auto_label(
@@ -1358,6 +1387,10 @@ pub fn start(window: &MainWindow) -> Rc<RefCell<GlueHandle>> {
         let g = glue.clone();
         window.on_manual_jog_released(move |side| g.borrow_mut().manual_jog_released(side));
         let g = glue.clone();
+        window.on_manual_harite(move |dir| g.borrow_mut().manual_harite(dir));
+        let g = glue.clone();
+        window.on_manual_harite_released(move || g.borrow_mut().manual_harite_released());
+        let g = glue.clone();
         window.on_window_deactivated(move || {
             if let Ok(mut g) = g.try_borrow_mut() {
                 g.window_deactivated();
@@ -1668,6 +1701,11 @@ mod tests {
 
     /// The window on the in-app demo robot, connected and released from the stop, on the auto page.
     fn demo_on_auto_page() -> (tempfile::TempDir, MainWindow, Rc<RefCell<Glue>>, Rc<RefCell<GlueHandle>>) {
+        demo_on_page(2)
+    }
+
+    /// The same, on page `page` (1 manual, 2 auto).
+    fn demo_on_page(page: i32) -> (tempfile::TempDir, MainWindow, Rc<RefCell<Glue>>, Rc<RefCell<GlueHandle>>) {
         let dir = tempfile::tempdir().unwrap();
         storage::set_data_dir(dir.path().to_path_buf());
         i_slint_backend_testing::init_no_event_loop();
@@ -1681,7 +1719,7 @@ mod tests {
         win.invoke_release_pressed();
         wait_for(&glue, "the stop to be released", |g| g.model.state().is_some_and(|s| s.mode != Mode::Stopped));
         wait_for(&glue, "TASK_MEMORY and CONFIG", |g| g.model.task_memory().is_some() && g.model.config().is_some());
-        win.set_page(2);
+        win.set_page(page);
         pump(100);
         (dir, win, glue, handle)
     }
@@ -1825,6 +1863,160 @@ mod tests {
                     for (nb, b) in &items[i + 1..] {
                         let (dx, dy) = (a[2].min(b[2]) - a[0].max(b[0]), a[3].min(b[3]) - a[1].max(b[1]));
                         assert!(dx <= 0.5 || dy <= 0.5, "{w}x{h} paths_open={open}: {na:?} {a:?} overlaps {nb:?} {b:?}");
+                    }
+                }
+            }
+        }
+    }
+
+    // ---- ハリテ (manual page) ----------------------------------------------------------------------
+    fn harite_center(win: &MainWindow, label: &str) -> (f32, f32) {
+        button(win, label)
+    }
+
+    fn press(win: &MainWindow, (x, y): (f32, f32)) {
+        touch(win.window(), x, y, i_slint_core::input::TouchPhase::Started);
+        pump(50);
+    }
+
+    fn lift(win: &MainWindow, (x, y): (f32, f32)) {
+        touch(win.window(), x, y, i_slint_core::input::TouchPhase::Ended);
+        pump(50);
+    }
+
+    fn harite_jog(glue: &Rc<RefCell<Glue>>) -> i8 {
+        glue.borrow().control.jog_harite
+    }
+
+    #[test]
+    fn harite_buttons_set_and_clear_jog_harite_in_the_outgoing_control() {
+        let (_dir, win, glue, _handle) = demo_on_page(1);
+        wait_for(&glue, "the harite column", |g| g.harite_enabled());
+        pump(100);
+        assert!(win.get_manual_harite_visible());
+        let (up, down) = (harite_center(&win, "ハリテ 上"), harite_center(&win, "ハリテ 下"));
+        assert_eq!(harite_jog(&glue), 0);
+        press(&win, up);
+        assert_eq!(harite_jog(&glue), 1, "▲ held: +1");
+        // The demo echoes the command it would send: speed 30 rad/s, shown in the readout.
+        wait_for(&glue, "the command to follow", |g| g.model.state().is_some_and(|s| s.harite_command == Some(30.0)));
+        pump(100);
+        assert_eq!(win.get_manual_harite_text(), "30 rad/s");
+        lift(&win, up);
+        assert_eq!(harite_jog(&glue), 0, "released: 0");
+        wait_for(&glue, "0 after the release", |g| g.model.state().is_some_and(|s| s.harite_command == Some(0.0)));
+        press(&win, down);
+        assert_eq!(harite_jog(&glue), -1);
+        wait_for(&glue, "-30", |g| g.model.state().is_some_and(|s| s.harite_command == Some(-30.0)));
+        lift(&win, down);
+        assert_eq!(harite_jog(&glue), 0);
+    }
+
+    #[test]
+    fn leaving_the_manual_page_releases_a_held_harite_button() {
+        use i_slint_core::input::TouchPhase::Ended;
+        let (_dir, win, glue, _handle) = demo_on_page(1);
+        wait_for(&glue, "the harite column", |g| g.harite_enabled());
+        pump(100);
+        let up = harite_center(&win, "ハリテ 上");
+        press(&win, up);
+        assert_eq!(harite_jog(&glue), 1);
+        win.set_page(0);
+        pump(100);
+        assert_eq!(harite_jog(&glue), 0, "the hidden page released it");
+        assert_eq!(glue.borrow().manual_harite_intent(), 0);
+        // The finger lifts on the hidden page, then the page returns: nothing resumes.
+        touch(win.window(), up.0, up.1, Ended);
+        win.set_page(1);
+        pump(100);
+        assert_eq!(harite_jog(&glue), 0, "a finger from before the switch does not resume");
+    }
+
+    #[test]
+    fn a_stop_releases_harite_and_refuses_it_until_released() {
+        let (_dir, win, glue, _handle) = demo_on_page(1);
+        wait_for(&glue, "the harite column", |g| g.harite_enabled());
+        pump(100);
+        let up = harite_center(&win, "ハリテ 上");
+        press(&win, up);
+        wait_for(&glue, "30", |g| g.model.state().is_some_and(|s| s.harite_command == Some(30.0)));
+        win.invoke_stop_pressed();
+        pump(100);
+        assert_eq!(harite_jog(&glue), 0, "the latched stop zeroes it at once");
+        wait_for(&glue, "the robot to stop", |g| g.model.state().is_some_and(|s| s.mode == Mode::Stopped && s.harite_command == Some(0.0)));
+        // The finger lifts, presses again while stopped: refused.
+        lift(&win, up);
+        press(&win, up);
+        assert_eq!(harite_jog(&glue), 0, "no harite while stopped");
+        lift(&win, up);
+    }
+
+    #[test]
+    fn the_harite_column_is_hidden_when_config_says_no_or_is_missing() {
+        use i_slint_backend_testing::ElementHandle;
+        let (_dir, win, glue, _handle) = demo_on_page(1);
+        wait_for(&glue, "the harite column", |g| g.harite_enabled());
+        pump(100);
+        let shown = |win: &MainWindow| ElementHandle::find_by_accessible_label(win, "ハリテ 上").count();
+        assert_eq!(shown(&win), 1);
+        // An older bridge (or one with harite_enabled false) sends CONFIG with the flag false.
+        let mut cfg = glue.borrow().model.config().unwrap().clone();
+        cfg.harite = false;
+        glue.borrow_mut().model.set_config_for_test(cfg);
+        pump(200);
+        assert!(!win.get_manual_harite_visible());
+        assert_eq!(shown(&win), 0, "no ▲▼ at all");
+        // Pressing is refused too: nothing can reach the control.
+        glue.borrow_mut().manual_harite(1);
+        assert_eq!(harite_jog(&glue), 0);
+    }
+
+    /// Every control of the manual page: at least 44 px, inside the panel, and no two overlap, at the
+    /// phone's usual window sizes, with and without the ハリテ column.
+    #[test]
+    fn manual_panel_controls_do_not_overlap_or_leave_the_panel() {
+        use i_slint_backend_testing::ElementHandle;
+        let (_dir, win, glue, _handle) = demo_on_page(1);
+        wait_for(&glue, "the harite column", |g| g.harite_enabled());
+        let config = glue.borrow().model.config().unwrap().clone();
+        for harite in [true, false] {
+            let mut cfg = config.clone();
+            cfg.harite = harite;
+            glue.borrow_mut().model.set_config_for_test(cfg);
+            for (w, h) in [(800.0, 360.0), (800.0, 336.0), (914.0, 411.0), (1280.0, 720.0)] {
+                win.window().set_size(slint::LogicalSize::new(w, h));
+                pump(200);
+                let panel = ElementHandle::find_by_element_type_name(&win, "ManualPanel").next().expect("ManualPanel");
+                let (pp, ps) = (panel.absolute_position(), panel.size());
+                let rect = |e: &ElementHandle| {
+                    let (p, s) = (e.absolute_position(), e.size());
+                    [p.x, p.y, p.x + s.width, p.y + s.height]
+                };
+                let mut items: Vec<(String, [f32; 4])> = panel
+                    .query_descendants()
+                    .match_accessible_role(i_slint_core::items::AccessibleRole::Button)
+                    .find_all()
+                    .iter()
+                    .map(|e| (e.accessible_label().unwrap_or_default().to_string(), rect(e)))
+                    .collect();
+                for ty in ["Stick", "Slider"] {
+                    items.extend(ElementHandle::find_by_element_type_name(&win, ty).map(|e| (ty.to_owned(), rect(&e))));
+                }
+                let want = if harite { 25 } else { 23 };
+                assert_eq!(items.len(), want, "{w}x{h} harite={harite}: {:?}", items.iter().map(|i| i.0.as_str()).collect::<Vec<_>>());
+                assert_eq!(items.iter().filter(|i| i.0.starts_with("ハリテ")).count(), if harite { 2 } else { 0 });
+                for (name, r) in &items {
+                    let tag = format!("{w}x{h} harite={harite}: {name:?} {r:?}");
+                    assert!(r[2] - r[0] >= 43.9 && r[3] - r[1] >= 43.9, "under 44 px: {tag}");
+                    assert!(
+                        r[0] >= pp.x - 0.5 && r[1] >= pp.y - 0.5 && r[2] <= pp.x + ps.width + 0.5 && r[3] <= pp.y + ps.height + 0.5,
+                        "outside the panel {pp:?} {ps:?}: {tag}"
+                    );
+                }
+                for (i, (na, a)) in items.iter().enumerate() {
+                    for (nb, b) in &items[i + 1..] {
+                        let (dx, dy) = (a[2].min(b[2]) - a[0].max(b[0]), a[3].min(b[3]) - a[1].max(b[1]));
+                        assert!(dx <= 0.5 || dy <= 0.5, "{w}x{h} harite={harite}: {na:?} {a:?} overlaps {nb:?} {b:?}");
                     }
                 }
             }

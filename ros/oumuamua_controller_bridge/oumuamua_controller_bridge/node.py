@@ -6,13 +6,14 @@ from rclpy.executors import ExternalShutdownException, MultiThreadedExecutor
 from rclpy.node import Node
 from rcl_interfaces.msg import ParameterDescriptor
 
-from .config import FIELD_KEYS, ROBOT_SHAPE_KEYS, build_config, expand_env, from_ros_params
+from .config import DEFAULTS, FIELD_KEYS, HARITE_KEYS, ROBOT_SHAPE_KEYS, build_config, expand_env, from_ros_params
 from .ros_io import RosIoNode
 from .server import BridgeServer
 
 # Keys of the bridge's ROS parameters. There are no defaults: every key must be in the parameter files
-# (oumuamua_bringup/config/controller_bridge.yaml and, for field.*, field.yaml).
-# config.DEFAULTS is only for the fake robot and the tests.
+# (oumuamua_bringup/config/controller_bridge.yaml and, for field.*, field.yaml). The exceptions are optional:
+# ROBOT_SHAPE_KEYS (none = the map draws a circle) and HARITE_KEYS (config.DEFAULTS apply).
+# config.DEFAULTS is otherwise only for the fake robot and the tests.
 PARAM_KEYS = ("robot_name", "lift_max", "robot_radius", "completion_setup_files",
               "lift_preset_names", "lift_preset_heights", "speed_levels") + FIELD_KEYS
 
@@ -24,6 +25,9 @@ def _read_params(node: Node) -> dict:
     params = {key: node.get_parameter(key).value for key in PARAM_KEYS}
     for key in ROBOT_SHAPE_KEYS:  # optional: without them the map draws the robot_radius circle
         node.declare_parameter(key, None, any_type)
+        params[key] = node.get_parameter(key).value
+    for key in HARITE_KEYS:  # optional with defaults: a yaml without them still starts (harite on, 30 rad/s)
+        node.declare_parameter(key, DEFAULTS[key], any_type)
         params[key] = node.get_parameter(key).value
     missing = [key for key, value in params.items() if value is None and key not in ROBOT_SHAPE_KEYS]
     if missing:

@@ -29,6 +29,8 @@ pub struct ControlInput {
     pub jog_left: i8,
     pub jog_right: i8,
     pub estop: bool,
+    /// Harite: +1 up, -1 down, 0 released.
+    pub jog_harite: i8,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -293,6 +295,7 @@ impl Link<'_> {
             jog_left: c.jog_left,
             jog_right: c.jog_right,
             estop: c.estop,
+            jog_harite: c.jog_harite,
         }));
         for m in std::mem::take(&mut *sh.outbox.lock().unwrap()) {
             self.out.push(m);
@@ -365,11 +368,12 @@ mod tests {
             jog_left: 1,
             jog_right: -1,
             estop: true,
+            jog_harite: 1,
         };
         let t0 = Instant::now();
         assert_eq!(fresh_control((c, t0), t0 + Duration::from_millis(100)), c);
         let z = fresh_control((c, t0), t0 + Duration::from_millis(300));
-        assert_eq!((z.vx, z.vy, z.wz, z.jog_left, z.jog_right), (0.0, 0.0, 0.0, 0, 0));
+        assert_eq!((z.vx, z.vy, z.wz, z.jog_left, z.jog_right, z.jog_harite), (0.0, 0.0, 0.0, 0, 0, 0));
         assert!(z.estop && z.field_frame);
     }
 }

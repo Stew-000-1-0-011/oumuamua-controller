@@ -49,6 +49,10 @@ pub const SUCTION_A: f64 = 2.5;
 pub const SUCTION_RAD_S: f64 = 300.0;
 pub const VDC_NOMINAL: f64 = 24.0;
 pub const VDC_SAG_PER_A: f64 = 0.05;
+// Harite (lift without suction) has no height here: /harite/command is just echoed. HARITE_SPEED is
+// config.py DEFAULTS "harite_speed" (rotor rad/s while a button is held), HARITE_MAX is fake_robot.py's.
+pub const HARITE_SPEED: f64 = 30.0;
+pub const HARITE_MAX: f64 = 100.0;
 pub const MOTOR_NAMES: [&str; 5] = ["車輪0", "車輪1", "車輪2", "吸引 左", "吸引 右"];
 pub const OBSTACLES: [[f64; 4]; 12] = [
     [-2.8025, -0.02, 1.5625, 0.02],
@@ -492,6 +496,15 @@ mod tests {
         const PY: &str = include_str!("../../../ros/oumuamua_controller_bridge/oumuamua_controller_bridge/protocol.py");
         let names = MOTOR_NAMES.map(|n| format!("\"{n}\"")).join(", ");
         assert!(PY.contains(&format!("MOTOR_NAMES = [{names}]")));
+    }
+
+    #[test]
+    fn harite_constants_match_the_python_side() {
+        assert_eq!(fake_const("HARITE_MAX"), HARITE_MAX);
+        assert_eq!(defaults("harite_speed"), [HARITE_SPEED]);
+        assert_eq!(defaults("harite_enabled").len(), 0, "a bool: no numbers");
+        const PY: &str = include_str!("../../../ros/oumuamua_controller_bridge/oumuamua_controller_bridge/config.py");
+        assert!(PY.contains("\"harite_enabled\": True") && PY.contains("\"harite_reversed\": False"));
     }
 
     #[test]

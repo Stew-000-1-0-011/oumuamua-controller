@@ -21,6 +21,7 @@ fn state_body() -> State {
         task: None,
         path: None,
         tracker_enabled: false,
+        harite_command: None,
     }
 }
 

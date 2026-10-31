@@ -34,6 +34,28 @@ slint::slint! {
             jog-released(side) => { root.jog-released(side); }
         }
     }
+    export component HariteHost inherits Window {
+        width: 1000px;
+        height: 500px;
+        in-out property <bool> panel-visible: true;
+        in-out property <bool> harite-visible: true;
+        in-out property <bool> stopped: false;
+        in-out property <bool> auto-active: false;
+        callback jog-pressed(int, int);
+        callback jog-released(int);
+        callback harite-pressed(int);
+        callback harite-released();
+        ManualPanel {
+            visible: root.panel-visible;
+            harite-visible: root.harite-visible;
+            stopped: root.stopped;
+            auto-active: root.auto-active;
+            jog-pressed(side, dir) => { root.jog-pressed(side, dir); }
+            jog-released(side) => { root.jog-released(side); }
+            harite-pressed(d) => { root.harite-pressed(d); }
+            harite-released => { root.harite-released(); }
+        }
+    }
 }
 
 fn touch(w: &slint::Window, id: i32, x: f32, y: f32, phase: TouchPhase) {
@@ -238,4 +260,109 @@ fn first_finger_up_before_second_finger_up() {
     assert!(c.wz < 0.0, "slider still held: {c:?}");
     touch(w, 1, 900., 458., Ended);
     assert_eq!(read_all(&manual).wz, 0.0);
+}
+
+// ---- ハリテ ---------------------------------------------------------------------------------------
+// The same panel with the ハリテ column shown.
+// Measured in the 1000x500 host with the ハリテ column shown (jog row at y=151); re-measure after changing
+// manual.slint.
+const LIFT_UP: (f32, f32) = (269., 151.);
+const HARITE_UP: (f32, f32) = (645., 151.);
+const HARITE_DOWN: (f32, f32) = (693., 151.);
+
+/// The host with Manual wired like glue.rs does, for harite and the lift jogs.
+fn harite_host() -> (HariteHost, Rc<RefCell<Manual>>, Rc<RefCell<u32>>) {
+    thread_local!(static INIT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) });
+    if !INIT.replace(true) {
+        i_slint_backend_testing::init_no_event_loop();
+    }
+    let host = HariteHost::new().unwrap();
+    let manual = Rc::new(RefCell::new(Manual::default()));
+    let releases = Rc::new(RefCell::new(0u32));
+    let m = manual.clone();
+    host.on_jog_pressed(move |side, dir| m.borrow_mut().jog_press(side as u8, dir as i8));
+    let m = manual.clone();
+    host.on_jog_released(move |side| m.borrow_mut().jog_release(side as u8));
+    let m = manual.clone();
+    host.on_harite_pressed(move |dir| m.borrow_mut().harite_press(dir as i8));
+    let (m, r) = (manual.clone(), releases.clone());
+    host.on_harite_released(move || {
+        *r.borrow_mut() += 1;
+        m.borrow_mut().harite_release();
+    });
+    host.show().unwrap();
+    settle();
+    (host, manual, releases)
+}
+
+fn read_harite(manual: &Rc<RefCell<Manual>>) -> (i8, i8) {
+    let c = read_all(manual);
+    (c.jog_harite, c.jog_left)
+}
+
+#[test]
+fn harite_press_and_release_are_per_finger_and_independent_of_the_lift_jogs() {
+    let (host, manual, _) = harite_host();
+    let w = host.window();
+    let (up, down, lift_up) = (HARITE_UP, HARITE_DOWN, LIFT_UP);
+    // Finger 0 on ハリテ ▲, finger 1 on the left lift 上: both are held.
+    touch(w, 0, up.0, up.1, Started);
+    touch(w, 1, lift_up.0, lift_up.1, Started);
+    assert_eq!(read_harite(&manual), (1, 1));
+    // Lifting the lift finger leaves harite held, and the other way round.
+    touch(w, 1, lift_up.0, lift_up.1, Ended);
+    assert_eq!(read_harite(&manual), (1, 0));
+    touch(w, 1, lift_up.0, lift_up.1, Started);
+    touch(w, 0, up.0, up.1, Ended);
+    assert_eq!(read_harite(&manual), (0, 1), "ハリテ released, the lift keeps jogging");
+    touch(w, 1, lift_up.0, lift_up.1, Ended);
+    // ▲ then ▼ (two fingers on the one mechanism): the later press wins, and lifting either stops it.
+    touch(w, 0, up.0, up.1, Started);
+    touch(w, 2, down.0, down.1, Started);
+    assert_eq!(read_harite(&manual).0, -1);
+    touch(w, 2, down.0, down.1, Ended);
+    assert_eq!(read_harite(&manual).0, 0);
+    touch(w, 0, up.0, up.1, Ended);
+    assert_eq!(read_harite(&manual).0, 0);
+}
+
+#[test]
+fn a_cancelled_touch_releases_harite() {
+    let (host, manual, _) = harite_host();
+    let w = host.window();
+    let up = HARITE_UP;
+    touch(w, 0, up.0, up.1, Started);
+    assert_eq!(read_harite(&manual).0, 1);
+    touch(w, 0, up.0, up.1, Cancelled);
+    assert_eq!(read_harite(&manual).0, 0);
+}
+
+#[test]
+fn hiding_stopping_or_removing_the_column_releases_a_held_harite_button() {
+    for what in ["panel", "stopped", "auto", "column"] {
+        let (host, manual, releases) = harite_host();
+        let w = host.window();
+        let up = HARITE_UP;
+        touch(w, 0, up.0, up.1, Started);
+        assert_eq!(read_harite(&manual).0, 1, "{what}");
+        match what {
+            "panel" => host.set_panel_visible(false),
+            "stopped" => host.set_stopped(true),
+            "auto" => host.set_auto_active(true),
+            _ => host.set_harite_visible(false),
+        }
+        settle();
+        assert_eq!(read_harite(&manual).0, 0, "{what}: the held ▲ was released without a finger-up");
+        assert!(*releases.borrow() >= 1, "{what}");
+        // The finger-up arrives later (or never): nothing changes, and showing it again does not resume.
+        touch(w, 0, up.0, up.1, Ended);
+        match what {
+            "panel" => host.set_panel_visible(true),
+            "stopped" => host.set_stopped(false),
+            "auto" => host.set_auto_active(false),
+            _ => host.set_harite_visible(true),
+        }
+        settle();
+        assert_eq!(read_harite(&manual).0, 0, "{what}: does not resume");
+    }
 }

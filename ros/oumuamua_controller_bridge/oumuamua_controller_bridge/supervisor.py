@@ -7,6 +7,7 @@ import threading
 import traceback
 from typing import Callable, Optional
 
+from .harite import HariteDriver
 from .rosio import RosIo
 
 
@@ -38,7 +39,8 @@ def _locked(fn):
 
 class Supervisor:
     def __init__(self, io: RosIo, lift_max: float, timeout_s: float = 0.3,
-                 max_v: float = 2.0, max_w: float = 2.5):
+                 max_v: float = 2.0, max_w: float = 2.5,
+                 harite_speed: Optional[float] = None, harite_reversed: bool = False):
         self.lock = threading.RLock()
         self.io = io
         self.lift_max = lift_max
@@ -55,6 +57,9 @@ class Supervisor:
         self._v = (0.0, 0.0, 0.0)
         self._field = False
         self._jog = [0, 0]
+        # Harite (no suction, speed-controlled lift): None speed = the robot has none, never touched.
+        self.harite = (HariteDriver(io, self.lock, harite_speed, harite_reversed)
+                       if harite_speed is not None else None)
 
     # -- inputs --------------------------------------------------------
     @_locked
@@ -70,6 +75,8 @@ class Supervisor:
                 self._enter_stop("estop")
             else:
                 self.stop_reason = "estop"
+        if self.harite is not None:
+            self.harite.on_control(c.get("jog_harite", 0), self.mode == Mode.MANUAL)
         if self.mode == Mode.STOP:
             self._jog = jogs  # held keys do not start anything after release
             return
@@ -100,6 +107,8 @@ class Supervisor:
                 vx, vy = vx * self.max_v / n, vy * self.max_v / n
             wz = max(-self.max_w, min(self.max_w, wz))
             self.io.publish_cmd_vel(vx, vy, wz)
+        if self.harite is not None:
+            self.harite.tick(now_s, self.mode == Mode.MANUAL, self.mode == Mode.STOP)
 
     # -- transitions ---------------------------------------------------
     @_locked
@@ -112,6 +121,8 @@ class Supervisor:
             self.mode = Mode.MANUAL
             self.stop_reason = ""
             self._v = (0.0, 0.0, 0.0)  # drive only on a CONTROL received after the release
+            if self.harite is not None:
+                self.harite.release(self._now)
         return True, ""
 
     @_locked
@@ -119,6 +130,8 @@ class Supervisor:
         if self.mode != Mode.STOP:
             self.mode = Mode.AUTO
             self.auto_label = label
+            if self.harite is not None:
+                self.harite.auto()
 
     @_locked
     def leave_auto(self) -> None:
@@ -146,7 +159,10 @@ class Supervisor:
         self.stop_reason = reason
         self.auto_label = ""
         io = self.io
-        steps = [("cancel_task", io.cancel_task),
+        steps = []
+        if self.harite is not None:  # first: 0, then disable (it cannot be left moving)
+            steps.append(("harite stop", lambda: self.harite.stop(self._now)))
+        steps += [("cancel_task", io.cancel_task),
                  ("stop_path", lambda: io.stop_path(_noop)),
                  ("set_tracker", lambda: io.set_tracker(False, _noop))]
         steps += [(f"lift_cancel {g}", lambda g=g: io.lift_cancel(g)) for g in (0, 1)]

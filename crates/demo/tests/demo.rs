@@ -36,6 +36,13 @@ impl Probe {
         })
     }
 
+    /// The next STATE to arrive from now on: everything received so far is dropped first.
+    fn fresh_state(&mut self, secs: f64, pick: impl Fn(&State) -> bool) -> State {
+        self.buf.clear();
+        while self.rx.try_recv().is_ok() {}
+        self.state(secs, pick)
+    }
+
     fn state(&mut self, secs: f64, pick: impl Fn(&State) -> bool) -> State {
         self.wait(secs, |e| match e {
             LinkEvent::State { body, .. } if pick(body) => Some(body.clone()),
@@ -128,7 +135,7 @@ fn silent_operator_is_stopped_within_a_moment() {
         *seq += 1;
         send(Datagram::Control(proto::Control {
             session, seq: *seq, t_ms: 0, vx: 0.0, vy: 0.0, wz: 0.0,
-            field_frame: false, jog_left: 0, jog_right: 0, estop: false,
+            field_frame: false, jog_left: 0, jog_right: 0, estop: false, jog_harite: 0,
         }));
     };
     let mut buf = [0u8; 2048];
@@ -398,4 +405,96 @@ fn releasing_suction_clears_the_held_state() {
     assert_eq!(memory(&mut p, |h, _| h == &[false, true]).1, vec![2, 1], "picked stays");
     assert_eq!(call(&c, &mut p, |req| Msg::SetSuction { req, gripper: 2, on: false }), (true, String::new()));
     memory(&mut p, |h, _| h == &[false, false]);
+}
+
+// ---- ハリテ ------------------------------------------------------------------------------------------
+#[test]
+fn config_says_the_demo_drives_harite_and_the_command_starts_at_zero() {
+    let (_r, _c, mut p) = connect();
+    assert!(p.msg(2.0, |m| match m {
+        Msg::Config { harite, .. } => Some(*harite),
+        _ => None,
+    }));
+    let s = p.state(2.0, |_| true);
+    assert_eq!(s.harite_command, Some(0.0), "stopped: nothing is commanded");
+}
+
+#[test]
+fn harite_follows_the_held_button_and_goes_to_zero_on_release() {
+    let (_r, c, mut p) = connect();
+    release(&c, &mut p);
+    c.set_control(ControlInput { jog_harite: 1, ..Default::default() });
+    p.state(2.0, |s| s.harite_command == Some(30.0));
+    c.set_control(ControlInput { jog_harite: -1, ..Default::default() });
+    p.state(2.0, |s| s.harite_command == Some(-30.0));
+    c.set_control(ControlInput::default());
+    p.state(2.0, |s| s.harite_command == Some(0.0));
+}
+
+#[test]
+fn harite_stops_on_estop_and_on_link_loss_and_waits_for_a_new_press_after_the_release() {
+    let (_r, c, mut p) = connect();
+    release(&c, &mut p);
+    c.set_control(ControlInput { jog_harite: 1, ..Default::default() });
+    p.state(2.0, |s| s.harite_command == Some(30.0));
+    c.set_control(ControlInput { jog_harite: 1, estop: true, ..Default::default() });
+    p.state(2.0, |s| s.mode == Mode::Stopped && s.harite_command == Some(0.0));
+    // Estop cleared, the button still held: released to manual, but nothing moves until it is pressed again.
+    c.set_control(ControlInput { jog_harite: 1, ..Default::default() });
+    release(&c, &mut p);
+    std::thread::sleep(Duration::from_millis(200));
+    let s = p.fresh_state(2.0, |s| s.mode == Mode::Manual);
+    assert_eq!(s.harite_command, Some(0.0), "held through the stop: ignored");
+    c.set_control(ControlInput::default());
+    std::thread::sleep(Duration::from_millis(100));
+    c.set_control(ControlInput { jog_harite: 1, ..Default::default() });
+    p.state(2.0, |s| s.harite_command == Some(30.0));
+    // Auto: the command is 0 and stays 0 while the button is held.
+    assert!(call(&c, &mut p, |req| Msg::StartPath { req, name: "slalom_forward".into() }).0);
+    p.state(2.0, |s| s.mode == Mode::Auto && s.harite_command == Some(0.0));
+    assert_eq!(p.fresh_state(1.0, |s| s.mode == Mode::Auto).harite_command, Some(0.0));
+}
+
+#[test]
+fn harite_goes_to_zero_when_control_stops_arriving() {
+    // link::Client never stops sending CONTROL, so speak the protocol by hand.
+    let robot = DemoRobot::start().unwrap();
+    let sock = UdpSocket::bind("127.0.0.1:0").unwrap();
+    sock.set_read_timeout(Some(Duration::from_millis(10))).unwrap();
+    let send = |d: Datagram| sock.send_to(&d.encode(), robot.addr()).unwrap();
+    let session = 78;
+    send(Datagram::Hello { session, client_name: "raw".into(), takeover: false });
+    let mut seq = 0;
+    let control = |seq: &mut u32| {
+        *seq += 1;
+        send(Datagram::Control(proto::Control {
+            session, seq: *seq, t_ms: 0, vx: 0.0, vy: 0.0, wz: 0.0,
+            field_frame: false, jog_left: 0, jog_right: 0, estop: false,
+            jog_harite: if *seq >= 10 { 1 } else { 0 }, // pressed after the release (a button held through it is ignored)
+        }));
+    };
+    let mut buf = [0u8; 2048];
+    let (start, mut last) = (Instant::now(), Instant::now());
+    let (mut moved, mut stopped) = (false, false);
+    while start.elapsed() < Duration::from_secs(3) && !stopped {
+        if start.elapsed() < Duration::from_millis(700) && last.elapsed() >= Duration::from_millis(20) {
+            control(&mut seq);
+            last = Instant::now();
+            if seq == 5 {
+                send(Datagram::Rel { session, seq: 1, msg: Msg::ReleaseStop { req: 1 } });
+            }
+        }
+        let Ok((n, _)) = sock.recv_from(&mut buf) else { continue };
+        if let Ok(Datagram::State { body, .. }) = Datagram::decode(&buf[..n]) {
+            if body.mode == Mode::Manual && body.harite_command == Some(30.0) {
+                moved = true;
+            }
+            if moved && body.mode == Mode::Stopped {
+                assert_eq!(body.harite_command, Some(0.0), "link lost: 0");
+                stopped = true;
+            }
+        }
+    }
+    assert!(moved, "never moved while the button was held");
+    assert!(stopped, "never stopped after CONTROL ceased");
 }

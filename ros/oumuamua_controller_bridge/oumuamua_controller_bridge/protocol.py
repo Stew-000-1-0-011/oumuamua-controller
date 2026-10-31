@@ -83,6 +83,17 @@ def decode(data: bytes) -> Optional[list]:
     return value
 
 
+def control_jog_harite(m) -> int:
+    """CONTROL's trailing `jog_harite` (index 11) as -1, 0 or +1. An older phone sends no such element
+    (nil, a bool or a non-number also read as 0); a value beyond 1 counts as a press in that direction."""
+    if len(m) <= 11:
+        return 0
+    v = m[11]
+    if isinstance(v, bool) or not isinstance(v, (int, float)) or v != v or v == 0:
+        return 0
+    return 1 if v > 0 else -1
+
+
 def _to_mm(v: float) -> int:
     return max(-32767, min(32767, int(round(v * 1000.0))))
 

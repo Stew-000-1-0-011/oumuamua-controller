@@ -25,12 +25,25 @@ hand them to the bridge; `bridge.launch.py` therefore reads them out of `task_co
 Keys in `controller_bridge.yaml` win. Without them the FIELD message carries empty lists and the map
 draws a `robot_radius` circle.
 
+Harite (the lift without suction, `harite` package; `docs/protocol.md` 5.3) has three **optional** parameters, unlike
+the rest: a `controller_bridge.yaml` without them still starts, with the defaults below (the same way `footprint` is
+optional). Recommended lines to add under `bridge.ros__parameters` in `controller_bridge.yaml`:
+
+    harite_enabled: true    # false on a robot without harite: the phone hides the controls, the bridge never touches it
+    harite_speed: 30.0      # [rotor rad/s] while the phone's ▲ / ▼ is held; clamped to 0..100 (harite.yaml max_velocity)
+    harite_reversed: false  # true if "up" is a negative rotor speed on the real mount
+
+The bridge publishes `/harite/target_velocity` (50 Hz while manual), calls `/harite/enable` (false on every stop and at
+start-up, true on RELEASE_STOP) and shows `/harite/command` on the phone. It needs the `harite` node (started by
+`bringup.launch.py` on the real robot, not with `sim:=true`; with `harite_enabled: true` and no node, the stop only logs the
+service as missing and retries once a second).
+
 ## Run without ROS (simulated robot)
 
     python3 -m oumuamua_controller_bridge.fake_robot [--port 47800]
 
 Runs `BridgeServer` on `FakeRosIo` (planar cmd_vel integration, 1 s per task stage, lift 0.05 m/s,
-LiDAR against the outer walls). Its `DEFAULT_CONFIG` mirrors `controller_bridge.yaml`;
+LiDAR against the outer walls; harite just echoes its command). Its `DEFAULT_CONFIG` mirrors `controller_bridge.yaml`;
 `test_fake_robot.py::test_default_config_matches_bridge_yaml` keeps them equal (skipped outside the oumuamua workspace; it also compares `footprint` and `suction_offsets` with `task_commander.yaml`).
 
 ## Tests

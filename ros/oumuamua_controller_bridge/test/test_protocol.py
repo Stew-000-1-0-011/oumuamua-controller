@@ -63,3 +63,15 @@ def test_state_full_golden_has_five_motors_with_the_extended_layout():
     # The first two elements keep the old meaning (vdc, ok): an older phone reads just those.
     assert wheels[0][:2] == [12.5, True]
     assert len(protocol.encode(SAMPLES["state_full"])) <= 1200
+
+
+def test_harite_fields_are_trailing_so_older_peers_still_read_the_leading_ones():
+    control = SAMPLES["control"]
+    assert len(control) == 12 and control[:11] == [protocol.CONTROL, 0x12345678, 7, 123456, 0.5, -1.25, 0.0, True, -1, 1, False]
+    assert protocol.control_jog_harite(control) == 1
+    assert protocol.control_jog_harite(control[:11]) == 0, "an older phone"
+    state = SAMPLES["state_full"][5]
+    assert len(state) == 10 and state[9] == -12.5
+    assert SAMPLES["state_empty"][5][9] is None, "nil is 'unknown'"
+    config = SAMPLES["rel_config"][3]
+    assert len(config) == 10 and config[9] is True and len(config[:9]) == 9

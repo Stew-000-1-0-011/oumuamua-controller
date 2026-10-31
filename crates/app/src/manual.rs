@@ -112,6 +112,17 @@ pub fn auto_label(task: Option<&TaskState>, path: Option<&(String, bool)>) -> St
     }
 }
 
+/// The ハリテ readout: the last `/harite/command` [rotor rad/s], or "-" when the bridge has none
+/// (or is older than the field). No sign for zero.
+pub fn harite_text(command: Option<f64>) -> String {
+    match command.filter(|v| v.is_finite()) {
+        Some(v) if v.abs() < 0.05 => "0 rad/s".to_owned(),
+        Some(v) if v.abs() < 10.0 => format!("{v:.1} rad/s"),
+        Some(v) => format!("{v:.0} rad/s"),
+        None => "-".to_owned(),
+    }
+}
+
 /// The user's manual inputs. Everything here is "intent"; `apply` decides what is sent.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Manual {
@@ -121,13 +132,15 @@ pub struct Manual {
     stick: (f32, f32),
     slider: f32,
     jog: [i8; 2],
+    /// Harite ▲/▼: +1 / -1 while held, 0 released.
+    harite: i8,
     /// Per pressing side: the sides that press drove.
     driven: [[bool; 2]; 2],
 }
 
 impl Default for Manual {
     fn default() -> Self {
-        Manual { level: 0, field_frame: false, both: false, stick: (0.0, 0.0), slider: 0.0, jog: [0, 0], driven: [[false; 2]; 2] }
+        Manual { level: 0, field_frame: false, both: false, stick: (0.0, 0.0), slider: 0.0, jog: [0, 0], harite: 0, driven: [[false; 2]; 2] }
     }
 }
 
@@ -162,6 +175,14 @@ impl Manual {
         }
         self.driven[side] = [false, false];
     }
+    /// Pressing ハリテ ▲ (`dir` +1) or ▼ (-1). The later press wins, and lifting either finger stops it:
+    /// it is one mechanism, so two fingers share it like the two buttons of one lift side.
+    pub fn harite_press(&mut self, dir: i8) {
+        self.harite = dir.clamp(-1, 1);
+    }
+    pub fn harite_release(&mut self) {
+        self.harite = 0;
+    }
     /// Changes 両方. Any held jog is dropped, since its press was made under the old meaning.
     pub fn set_both(&mut self, both: bool) {
         if self.both != both {
@@ -175,6 +196,7 @@ impl Manual {
         self.stick = (0.0, 0.0);
         self.slider = 0.0;
         self.jog = [0, 0];
+        self.harite = 0;
         self.driven = [[false; 2]; 2];
     }
     pub fn level_pair(&self, levels: &[(f64, f64); 3]) -> (f64, f64) {
@@ -191,10 +213,12 @@ impl Manual {
             c.wz = slider_to_omega(self.slider, lv);
             c.field_frame = self.field_frame;
             [c.jog_left, c.jog_right] = self.jog;
+            c.jog_harite = self.harite;
         } else {
             (c.vx, c.vy, c.wz) = (0.0, 0.0, 0.0);
             c.field_frame = self.field_frame;
             (c.jog_left, c.jog_right) = (0, 0);
+            c.jog_harite = 0;
         }
         *c != before
     }
@@ -406,6 +430,52 @@ mod tests {
         m.set_both(false);
         m.apply(&mut c, &levels, true);
         assert_eq!((c.jog_left, c.jog_right), (0, 0));
+    }
+
+    #[test]
+    fn harite_follows_the_press_and_is_zero_on_release() {
+        let mut m = Manual::default();
+        let mut c = ControlInput::default();
+        m.harite_press(1);
+        assert!(m.apply(&mut c, &DEFAULT_LEVELS, true));
+        assert_eq!(c.jog_harite, 1);
+        m.harite_press(-1);
+        m.apply(&mut c, &DEFAULT_LEVELS, true);
+        assert_eq!(c.jog_harite, -1, "the later press wins");
+        m.harite_release();
+        m.apply(&mut c, &DEFAULT_LEVELS, true);
+        assert_eq!(c.jog_harite, 0);
+        m.harite_press(7);
+        m.apply(&mut c, &DEFAULT_LEVELS, true);
+        assert_eq!(c.jog_harite, 1, "clamped to a direction");
+    }
+
+    #[test]
+    fn harite_is_dropped_by_release_all_and_when_not_allowed() {
+        let mut m = Manual::default();
+        let mut c = ControlInput::default();
+        m.harite_press(1);
+        m.apply(&mut c, &DEFAULT_LEVELS, true);
+        assert_eq!(c.jog_harite, 1);
+        assert!(m.apply(&mut c, &DEFAULT_LEVELS, false), "not allowed (other page, auto, link lost): zero at once");
+        assert_eq!(c.jog_harite, 0);
+        m.apply(&mut c, &DEFAULT_LEVELS, true);
+        assert_eq!(c.jog_harite, 1, "the intent is still held until it is released");
+        m.release_all();
+        m.apply(&mut c, &DEFAULT_LEVELS, true);
+        assert_eq!(c.jog_harite, 0, "release_all (page left, popup shown, link lost) forgets it");
+    }
+
+    #[test]
+    fn harite_text_shows_the_command_or_a_dash() {
+        assert_eq!(harite_text(None), "-");
+        assert_eq!(harite_text(Some(f64::NAN)), "-");
+        assert_eq!(harite_text(Some(f64::INFINITY)), "-");
+        assert_eq!(harite_text(Some(0.0)), "0 rad/s");
+        assert_eq!(harite_text(Some(-0.0)), "0 rad/s");
+        assert_eq!(harite_text(Some(30.0)), "30 rad/s");
+        assert_eq!(harite_text(Some(-100.0)), "-100 rad/s");
+        assert_eq!(harite_text(Some(2.5)), "2.5 rad/s");
     }
 
     #[test]

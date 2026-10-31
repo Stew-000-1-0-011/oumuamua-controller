@@ -35,9 +35,14 @@ export component Btn inherits Rectangle {
 // 上 / 下: acts only while held. Each press and release is reported once.
 component JogButton inherits Rectangle {
     in property <string> label;
+    // Spoken / test name when the glyph alone is not enough (ハリテ ▲).
+    in property <string> a11y;
     in property <bool> enabled: true;
     callback pressed();
     callback released();
+    accessible-role: button;
+    accessible-label: root.a11y != "" ? root.a11y : root.label;
+    accessible-enabled: root.enabled;
     min-height: Theme.tap - 4px;
     min-width: Theme.tap - 4px;
     border-radius: 8px;
@@ -227,6 +232,36 @@ component LiftColumn inherits Plate {
     }
 }
 
+// ハリテ: a lift without suction, driven only while ▲ / ▼ is held (the robot gets a speed, there is no
+// height). `blocked` is stopped, hidden or auto: both buttons are released and disabled.
+component HariteColumn inherits Plate {
+    in property <string> info;
+    in property <bool> blocked: false;
+    callback pressed(int);
+    callback released();
+    min-width: 100px;
+    max-width: 100px;
+    horizontal-stretch: 0;
+
+    VerticalLayout {
+        padding: 4px;
+        spacing: 3px;
+        Text { height: 16px; text: "ハリテ"; color: Theme.text; font-size: 14px; font-weight: 700; vertical-alignment: center; }
+        HorizontalLayout {
+            height: 44px;
+            spacing: 4px;
+            JogButton { label: "▲"; a11y: "ハリテ 上"; enabled: !root.blocked; pressed => { root.pressed(1); } released => { root.released(); } }
+            JogButton { label: "▼"; a11y: "ハリテ 下"; enabled: !root.blocked; pressed => { root.pressed(-1); } released => { root.released(); } }
+        }
+        VerticalLayout {
+            height: 44px;
+            alignment: center;
+            Text { text: "指令"; color: Theme.dim; font-size: 11px; horizontal-alignment: center; }
+            Text { text: root.info; color: Theme.text; font-size: 13px; horizontal-alignment: center; overflow: elide; }
+        }
+    }
+}
+
 // Drawn over the output screen: no background of its own, only plates around the controls.
 export component ManualPanel inherits Rectangle {
     background: transparent;
@@ -246,6 +281,9 @@ export component ManualPanel inherits Rectangle {
     in property <bool> auto-active: false;
     in property <string> auto-label;
     in property <string> speed-text;
+    // The bridge drives harite (CONFIG says so): shows the ハリテ column. Off for an older bridge.
+    in property <bool> harite-visible: false;
+    in property <string> harite-text: "-";
 
     callback stick-moved(float, float);
     callback slider-moved(float);
@@ -256,6 +294,10 @@ export component ManualPanel inherits Rectangle {
     callback reset-pressed();
     callback reset-confirmed();
     callback cancel-auto();
+    callback harite-pressed(int);
+    callback harite-released();
+    // The column leaving the tree (CONFIG changed) takes a held finger's release with it.
+    changed harite-visible => { if !root.harite-visible { root.harite-released(); } }
     changed visible => { if !root.visible { root.reset-armed = false; } }
     // A disabled TouchArea never reports the finger-up, so disarm here.
     changed reset-enabled => { if !root.reset-enabled { root.reset-armed = false; } }
@@ -306,6 +348,9 @@ export component ManualPanel inherits Rectangle {
                     Btn { label: "両方"; min-width: 48px; active: root.both; clicked => { root.both = !root.both; } }
                     Rectangle {
                         min-width: 100px;
+                        accessible-role: button;
+                        accessible-label: "リセット";
+                        accessible-enabled: root.reset-enabled;
                         border-radius: 8px;
                         clip: true;
                         background: root.reset-enabled ? Theme.panel-hi : Theme.panel;
@@ -364,6 +409,13 @@ export component ManualPanel inherits Rectangle {
                 jog-released(s) => { root.jog-released(s); }
                 preset(i) => { root.preset-pressed(1, i); }
                 suction-toggled => { root.suction-toggled(1); }
+            }
+            if root.harite-visible: HariteColumn {
+                info: root.harite-text;
+                // Like the lift buttons: stopped, page hidden, and also while the auto popup covers them.
+                blocked: root.stopped || !root.visible || root.auto-active;
+                pressed(d) => { root.harite-pressed(d); }
+                released => { root.harite-released(); }
             }
         }
     }

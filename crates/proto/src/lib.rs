@@ -314,8 +314,10 @@ pub struct State {
     pub task: Option<TaskState>,
     pub path: Option<(String, bool)>,
     pub tracker_enabled: bool,
+    /// The last `/harite/command` [rad/s] the bridge saw; `None` when unknown or from an older bridge.
+    pub harite_command: Option<f64>,
 }
-wire_struct!(State { mode, stop_reason, pose, vel, wheels, grippers, task, path, tracker_enabled });
+wire_struct_ext!(State { mode, stop_reason, pose, vel, wheels, grippers, task, path, tracker_enabled; harite_command = None });
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Control {
@@ -329,6 +331,9 @@ pub struct Control {
     pub jog_left: i8,
     pub jog_right: i8,
     pub estop: bool,
+    /// Harite (lift without suction): +1 up, -1 down, 0 released. Trailing and optional: an older
+    /// phone does not send it (0), an older bridge ignores it.
+    pub jog_harite: i8,
 }
 
 // --------------------------------------------------------------------- Msg
@@ -361,6 +366,8 @@ pub enum Msg {
         blocks: u8,
         columns: u8,
         rows: u8,
+        /// The bridge drives harite (jog controls shown). Trailing and optional: false from an older bridge.
+        harite: bool,
     },
     /// `footprint` (robot-frame polygon, x forward, y left) and `suction` (the two suction centres, gripper0
     /// first) are empty from a peer that does not send them: the map then draws a `robot_radius` circle.
@@ -409,8 +416,8 @@ impl Msg {
             ShellClose { req, tab } => row!(33; req, tab),
             ShellRename { req, tab, new_name } => row!(34; req, tab, new_name),
             Result { req, ok, message } => row!(50; req, ok, message),
-            Config { robot_name, paths, lift_presets, lift_max, speed_levels, blocks, columns, rows } => {
-                row!(51; robot_name, paths, lift_presets, lift_max, speed_levels, blocks, columns, rows)
+            Config { robot_name, paths, lift_presets, lift_max, speed_levels, blocks, columns, rows, harite } => {
+                row!(51; robot_name, paths, lift_presets, lift_max, speed_levels, blocks, columns, rows, harite)
             }
             Field { bounds, obstacles, shelf, start, robot_radius, footprint, suction } => {
                 row!(52; bounds, obstacles, shelf, start, robot_radius, footprint, suction)
@@ -466,6 +473,7 @@ impl Msg {
                 blocks: r.get(6)?,
                 columns: r.get(7)?,
                 rows: r.get(8)?,
+                harite: r.opt(9)?,
             },
             52 => Field {
                 bounds: r.get(1)?,
@@ -530,7 +538,7 @@ impl Datagram {
                 row!(1; session, robot_name, accepted, reason)
             }
             Datagram::Control(c) => row!(2; &c.session, &c.seq, &c.t_ms, &c.vx, &c.vy, &c.wz,
-                &c.field_frame, &c.jog_left, &c.jog_right, &c.estop),
+                &c.field_frame, &c.jog_left, &c.jog_right, &c.estop, &c.jog_harite),
             Datagram::State { session, seq, ack_seq, ack_t_ms, body } => {
                 row!(3; session, seq, ack_seq, ack_t_ms, body)
             }
@@ -572,6 +580,7 @@ impl Datagram {
                 jog_left: r.get(8)?,
                 jog_right: r.get(9)?,
                 estop: r.get(10)?,
+                jog_harite: r.opt(11)?,
             }),
             3 => Datagram::State {
                 session: r.get(1)?,

@@ -43,10 +43,13 @@ class Phone:
 
     def control(self, **kw):
         self.ctl_seq += 1
-        c = dict(vx=0.0, vy=0.0, wz=0.0, field=False, jl=0, jr=0, estop=False)
+        c = dict(vx=0.0, vy=0.0, wz=0.0, field=False, jl=0, jr=0, estop=False, jh=None)
         c.update(kw)
-        self.send([P.CONTROL, self.session, self.ctl_seq, self.ctl_seq * 10, c["vx"], c["vy"],
-                   c["wz"], c["field"], c["jl"], c["jr"], c["estop"]])
+        msg = [P.CONTROL, self.session, self.ctl_seq, self.ctl_seq * 10, c["vx"], c["vy"],
+               c["wz"], c["field"], c["jl"], c["jr"], c["estop"]]
+        if c["jh"] is not None:  # jh=None: an older phone, which sends no jog_harite
+            msg.append(c["jh"])
+        self.send(msg)
 
     def rel(self, msg):
         self.rel_seq += 1
@@ -141,6 +144,7 @@ def test_hello_welcome_and_initial_burst(env):
     assert field[7] == [[0.269, 0.12], [0.269, -0.12]]
     mem = p.rels(P.TASK_MEMORY)[0]
     assert mem[1] == [True, False] and mem[2] == [1, 2] and mem[3] == []
+    assert len(cfg) == 10 and cfg[9] is True, "CONFIG ends with harite (enabled by default)"
 
 
 def test_second_client_busy_then_takeover_sends_bye(env):
@@ -205,7 +209,7 @@ def test_state_stream_has_ack(env):
     m = st[-1]
     assert m[1] == 1234 and m[3] == 2
     body = m[5]
-    assert len(body) == 9
+    assert len(body) == 10 and body[9] is None, "harite_command: nil until the robot reports one"
     assert body[0] in (0, 1, 2) and body[2] == [1.0, 2.0, 0.5] and body[8] is False
     # A short (vdc, ok) entry gets the "no detail" defaults and its name by index.
     assert body[4] == [[1.5, True, 0.0, 0.0, P.MODE_UNKNOWN, 0, "車輪0"]]
@@ -498,3 +502,95 @@ def test_field_without_a_shape_sends_empty_lists(env):
     p.wait(lambda: len(p.rels(P.FIELD)) >= 1)
     field = p.rels(P.FIELD)[0]
     assert field[5] == 0.32 and field[6] == [] and field[7] == []
+
+
+# -- harite -----------------------------------------------------------------------------------------------
+def _release(p, io):
+    p.connect()
+    p.control()
+    p.wait(lambda: [m for m in p.kinds(P.STATE) if m[3] >= 1])
+    req = p.request(P.RELEASE_STOP)
+    assert p.wait(lambda: [m for m in p.rels(P.RESULT) if m[1] == req])[0][2] is True
+
+
+def _harite_after(io, n):
+    return [c[1] for c in io.calls[n:] if c[0] == "harite"]
+
+
+def test_jog_harite_in_control_is_published_and_released_to_zero(env):
+    io, srv, mk = env
+    p = mk()
+    _release(p, io)
+    assert ("harite_enable", True) in io.calls
+    n = len(io.calls)
+    for _ in range(5):
+        p.control(jh=1)
+        p.pump(0.03)
+    assert 30.0 in _harite_after(io, n)
+    assert set(_harite_after(io, n)) <= {0.0, 30.0}
+    n = len(io.calls)
+    for _ in range(5):
+        p.control(jh=0)
+        p.pump(0.03)
+    vals = _harite_after(io, n)
+    assert vals and vals[-1] == 0.0 and set(vals[len(vals) // 2:]) == {0.0}, "released: 0, not silence"
+
+
+def test_an_older_phone_without_jog_harite_connects_and_never_moves_it(env):
+    io, srv, mk = env
+    p = mk()
+    _release(p, io)
+    n = len(io.calls)
+    for _ in range(5):
+        p.control(vx=0.3)  # 11 elements
+        p.pump(0.03)
+    assert set(_harite_after(io, n)) == {0.0}
+    assert any(c[0] == "cmd_vel" and c[1] == pytest.approx(0.3) for c in io.calls[n:])
+
+
+def test_losing_control_stops_and_disables_harite(env):
+    io, srv, mk = env
+    p = mk()
+    _release(p, io)
+    for _ in range(3):
+        p.control(jh=1)
+        p.pump(0.03)
+    n = len(io.calls)
+    p.pump(0.6)  # CONTROL stops arriving
+    after = io.calls[n:]
+    assert ("harite_enable", False) in after
+    first = after.index(("harite_enable", False))
+    assert ("harite", 0.0) in after[:first], "0 before the disable"
+    assert not [c for c in after[first - 1:] if c[0] == "harite" and c[1] != 0.0], "nothing moves after the stop"
+    assert [c for c in after[:first] if c[0] == "harite"][-1] == ("harite", 0.0)
+
+
+def test_state_carries_the_harite_command_and_nil_when_it_is_not_finite(env):
+    io, srv, mk = env
+    io.snap = Snapshot(harite_command=-12.5)
+    p = mk()
+    p.connect()
+    p.control()
+    assert p.wait(lambda: [m for m in p.kinds(P.STATE) if m[5][9] == -12.5])
+    io.snap = Snapshot(harite_command=float("nan"))
+    assert p.wait(lambda: [m for m in p.kinds(P.STATE)[-3:] if m[5][9] is None])
+
+
+@pytest.mark.parametrize("cfg", [{"harite_enabled": False}])
+def test_harite_disabled_hides_the_controls_and_never_touches_it(tmp_path, cfg):
+    io = FakeRosIo()
+    srv = BridgeServer("oum", io, dict(CONFIG) | cfg | {"harite_speed": 30.0}, tmp_path, port=0,
+                       beacon_port=0, beacon_addr="127.0.0.1")
+    srv.start()
+    p = Phone(srv.port)
+    try:
+        _release(p, io)
+        for _ in range(5):
+            p.control(jh=1)
+            p.pump(0.03)
+        assert p.rels(P.CONFIG)[0][9] is False
+        assert not [c for c in io.calls if c[0].startswith("harite")]
+        assert p.kinds(P.STATE)[-1][5][9] is None
+    finally:
+        p.close()
+        srv.stop()

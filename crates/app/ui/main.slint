@@ -83,6 +83,8 @@ export component MainWindow inherits Window {
     in property <bool> manual-reset-enabled: true;
     in property <string> manual-message;
     in property <string> manual-speed-text;
+    in property <bool> manual-harite-visible: false;
+    in property <string> manual-harite-text: "-";
     in property <string> manual-auto-label;
 
     // Auto page. Selections live here so they survive page switches.
@@ -129,6 +131,8 @@ export component MainWindow inherits Window {
     callback manual-slider(float);
     callback manual-jog(int, int);
     callback manual-jog-released(int);
+    callback manual-harite(int);
+    callback manual-harite-released();
     callback manual-preset(int, int);
     callback manual-suction(int);
     callback manual-reset-pressed();
@@ -232,12 +236,16 @@ export component MainWindow inherits Window {
         stopped: root.stopped;
         message: root.manual-message;
         speed-text: root.manual-speed-text;
+        harite-visible: root.manual-harite-visible;
+        harite-text: root.manual-harite-text;
         auto-active: root.mode == 1;
         auto-label: root.manual-auto-label;
         stick-moved(x, y) => { root.manual-stick(x, y); }
         slider-moved(s) => { root.manual-slider(s); }
         jog-pressed(side, dir) => { root.manual-jog(side, dir); }
         jog-released(s) => { root.manual-jog-released(s); }
+        harite-pressed(d) => { root.manual-harite(d); }
+        harite-released => { root.manual-harite-released(); }
         preset-pressed(side, i) => { root.manual-preset(side, i); }
         suction-toggled(side) => { root.manual-suction(side); }
         reset-pressed => { root.manual-reset-pressed(); }

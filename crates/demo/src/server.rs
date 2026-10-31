@@ -87,6 +87,11 @@ struct Server {
     v: [f64; 3],
     field_frame: bool,
     jog: [i8; 2],
+    /// Harite: the held direction, whether it was held through a stop / auto (ignored until let go),
+    /// and the echoed /harite/command.
+    jog_harite: i8,
+    harite_blocked: bool,
+    harite_cmd: f64,
     // reporting
     pending_lifts: HashMap<u32, (usize, Vec<String>)>,
     log_level: u8,
@@ -127,6 +132,9 @@ impl Server {
             v: [0.0; 3],
             field_frame: false,
             jog: [0; 2],
+            jog_harite: 0,
+            harite_blocked: false,
+            harite_cmd: 0.0,
             pending_lifts: HashMap::new(),
             log_level: 20,
             state_seq: 0,
@@ -237,6 +245,7 @@ impl Server {
                 blocks: sim::BLOCKS,
                 columns: sim::COLUMNS,
                 rows: sim::ROWS,
+                harite: true,
             },
             Msg::Field {
                 bounds: sim::BOUNDS,
@@ -285,6 +294,15 @@ impl Server {
             } else {
                 self.enter_stop("estop");
             }
+        }
+        // Like the bridge: a button held through a stop or auto waits to be let go and pressed again.
+        self.jog_harite = c.jog_harite.signum();
+        if self.mode == Mode::Manual {
+            if self.jog_harite == 0 {
+                self.harite_blocked = false;
+            }
+        } else {
+            self.harite_blocked = self.jog_harite != 0;
         }
         let jog = [c.jog_left, c.jog_right];
         if self.mode != Mode::Stopped {
@@ -599,6 +617,13 @@ impl Server {
             }
             _ => [0.0; 3],
         };
+        // Harite: held direction * speed while manual (0 when released), 0 in stop and auto.
+        self.harite_cmd = if self.mode == Mode::Manual && !self.harite_blocked {
+            f64::from(self.jog_harite) * sim::HARITE_SPEED
+        } else {
+            0.0
+        }
+        .clamp(-sim::HARITE_MAX, sim::HARITE_MAX);
     }
 
     fn send_state(&mut self) {
@@ -614,6 +639,7 @@ impl Server {
             task: self.sim.task_state(),
             path: self.sim.path_state(),
             tracker_enabled: self.sim.tracker,
+            harite_command: Some(self.harite_cmd),
         };
         let d = Datagram::State { session: s.id, seq: self.state_seq, ack_seq: s.ack_seq, ack_t_ms: s.ack_t, body };
         self.tx(&d, s.addr);

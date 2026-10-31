@@ -3,6 +3,8 @@ minimal reader for config/bridge.yaml so the tests need no PyYAML."""
 import ast
 import os
 
+from .harite import clamp_speed
+
 
 DEFAULTS = {
     "robot_name": "oumuamua",
@@ -28,6 +30,10 @@ DEFAULTS = {
     "shelf": [1.5625, -0.30, 2.5025, 0.30],
     "start_pose": [-2.2, 1.3, 3.141592653589793],
     "robot_radius": 0.32,
+    # Harite (lift without suction). Optional in controller_bridge.yaml; these are used when it is absent.
+    "harite_enabled": True,
+    "harite_speed": 30.0,
+    "harite_reversed": False,
     # Robot frame (x forward, y left) as in task_commander.yaml: footprint (a flat list of x, y) and
     # grippers.suction_offsets (left gripper first).
     "footprint": [
@@ -49,6 +55,10 @@ FIELD_KEYS = ("field.bounds", "field.walls", "field.shelf", "field.notes_x", "fi
 # The robot's shape (oumuamua_bringup/config/task_commander.yaml, under the task_commander node). The bridge
 # declares them under the same names but they are optional: without them the map draws a circle.
 ROBOT_SHAPE_KEYS = ("footprint", "grippers.suction_offsets")
+
+# Optional like ROBOT_SHAPE_KEYS, but with defaults (DEFAULTS above), so a controller_bridge.yaml that
+# predates harite still starts. harite_speed is clamped to 0..100 rad/s (harite.yaml max_velocity).
+HARITE_KEYS = ("harite_enabled", "harite_speed", "harite_reversed")
 
 
 def robot_shape_from_text(text: str) -> dict:
@@ -96,6 +106,9 @@ def build_config(p: dict) -> dict:
         "shelf": [float(v) for v in p["shelf"]],
         "start_pose": [float(v) for v in p["start_pose"]],
         "robot_radius": float(p["robot_radius"]),
+        "harite_enabled": bool(p.get("harite_enabled", DEFAULTS["harite_enabled"])),
+        "harite_speed": clamp_speed(p.get("harite_speed", DEFAULTS["harite_speed"])),
+        "harite_reversed": bool(p.get("harite_reversed", DEFAULTS["harite_reversed"])),
         "footprint": [float(v) for v in p.get("footprint") or []],
         "suction_offsets": [float(v) for v in p.get("suction_offsets") or []],
         "completion_setup_files": [str(s) for s in p["completion_setup_files"]],

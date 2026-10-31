@@ -27,6 +27,7 @@ fn state(wheels: Vec<Wheel>) -> State {
         task: None,
         path: None,
         tracker_enabled: false,
+        harite_command: None,
     }
 }
 
@@ -56,6 +57,7 @@ fn state_with_five_motors_fits_one_datagram_even_when_full() {
     body.task = Some(TaskState { kind: 5, step: "差し込み".repeat(25), args: [-1, -1, -1, -1] });
     body.path = Some(("slalom_forward_".repeat(4), true));
     body.tracker_enabled = true;
+    body.harite_command = Some(-100.123456789);
     let n = dg(body).encode().len();
     assert!(n <= 1200, "STATE is {n} bytes");
     // The motors alone stay small, so a few more would still fit.

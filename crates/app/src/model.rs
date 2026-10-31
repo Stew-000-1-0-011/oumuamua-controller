@@ -35,6 +35,8 @@ pub struct Config {
     pub blocks: u8,
     pub columns: u8,
     pub rows: u8,
+    /// The bridge drives harite; false from an older bridge (the controls are then hidden).
+    pub harite: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -228,9 +230,9 @@ impl AppModel {
                     self.results.pop_front();
                 }
             }
-            Msg::Config { robot_name, paths, lift_presets, lift_max, speed_levels, blocks, columns, rows } => {
+            Msg::Config { robot_name, paths, lift_presets, lift_max, speed_levels, blocks, columns, rows, harite } => {
                 self.config = Some(Config {
-                    robot_name, paths, lift_presets, lift_max, speed_levels, blocks, columns, rows,
+                    robot_name, paths, lift_presets, lift_max, speed_levels, blocks, columns, rows, harite,
                 });
             }
             Msg::Field { bounds, obstacles, shelf, start, robot_radius, footprint, suction } => {
@@ -270,6 +272,11 @@ impl AppModel {
 
     pub fn connection(&self) -> ConnState {
         self.conn.clone()
+    }
+    /// Replaces the CONFIG (tests: an older bridge's flag).
+    #[cfg(test)]
+    pub fn set_config_for_test(&mut self, c: Config) {
+        self.config = Some(c);
     }
     pub fn robot_name(&self) -> Option<&str> {
         self.robot_name.as_deref()
@@ -320,6 +327,7 @@ mod tests {
             task: None,
             path: None,
             tracker_enabled: false,
+            harite_command: None,
         }
     }
 
@@ -385,6 +393,7 @@ mod tests {
             blocks: 6,
             columns: 3,
             rows: 3,
+            harite: true,
         }));
         m.apply(LinkEvent::Msg(Msg::Field {
             bounds: [0.0, 0.0, 5.0, 4.0],

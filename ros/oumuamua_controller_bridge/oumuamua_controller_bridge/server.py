@@ -14,6 +14,7 @@ from . import protocol as P
 from . import task_memory
 from .completion import complete as _complete
 from .handlers import Handlers
+from .harite import command_value
 from .reliable import ReliableReceiver, ReliableSender
 from .rosio import RosIo, Snapshot
 from .shells import ShellManager
@@ -141,7 +142,10 @@ class BridgeServer:
         self._path_shape: Optional[list] = None
         self._dropped_tabs: set = set()  # shell output was dropped: resync when the link drains
 
-        self.sup = Supervisor(io, lift_max=float(config.get("lift_max", 0.85)))
+        self.harite_enabled = bool(config.get("harite_enabled", True))
+        self.sup = Supervisor(io, lift_max=float(config.get("lift_max", 0.85)),
+                              harite_speed=float(config.get("harite_speed", 30.0)) if self.harite_enabled else None,
+                              harite_reversed=bool(config.get("harite_reversed", False)))
         self.shells = ShellManager(Path(log_root), self._on_shell_output, self._on_shell_closed)
         setup = tuple(config.get("completion_setup_files", ()))
         self.handlers = Handlers(
@@ -252,7 +256,8 @@ class BridgeServer:
             [P.CONFIG, self.robot_name, list(self.io.path_names()),
              [list(p) for p in c.get("lift_presets", [])], float(c.get("lift_max", 0.85)),
              [list(s) for s in c.get("speed_levels", [])], int(c.get("blocks", 6)),
-             int(c.get("columns", 3)), int(c.get("rows", 3))],
+             int(c.get("columns", 3)), int(c.get("rows", 3)),
+             self.harite_enabled],  # trailing: an older phone ignores it, an older bridge never sends it
             [P.FIELD, _box(c.get("field_bounds", [0, 0, 0, 0])),
              _obstacle_boxes(c.get("field_obstacles")),
              _box(c.get("shelf", [0, 0, 0, 0])), list(c.get("start_pose", [0, 0, 0])),
@@ -324,7 +329,7 @@ class BridgeServer:
         self._ack_seq, self._ack_t = seq, int(m[3])
         self.sup.on_control(now, dict(
             session=m[1], seq=seq, t_ms=m[3], vx=m[4], vy=m[5], wz=m[6], field_frame=m[7],
-            jog_left=m[8], jog_right=m[9], estop=m[10]))
+            jog_left=m[8], jog_right=m[9], estop=m[10], jog_harite=P.control_jog_harite(m)))
 
     def _on_rel(self, m: list) -> None:
         seq, msg = int(m[2]), m[3]
@@ -348,6 +353,8 @@ class BridgeServer:
             [int(task[0]), str(task[1]), [int(a) for a in task[2]]] if task else None,
             [str(path[0]), bool(path[1])] if path else None,
             bool(getattr(snap, "tracker_enabled", False)),
+            # Trailing and optional (nil = unknown): an older phone ignores it.
+            command_value(getattr(snap, "harite_command", None)) if self.harite_enabled else None,
         ]
         self._state_seq += 1
         self._tx([P.STATE, self._session, self._state_seq, self._ack_seq, self._ack_t, body])

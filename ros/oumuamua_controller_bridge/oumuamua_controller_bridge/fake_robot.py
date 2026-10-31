@@ -3,7 +3,7 @@
     python3 -m oumuamua_controller_bridge.fake_robot [--port 47800]
 
 Simplifications: cmd_vel is integrated on a plane (no wall collisions); a path run is accepted at once and finishes after 3 s; a task walks through its stages one second each and then succeeds; lifts move at
-0.05 m/s; suction switches instantly; the LiDAR casts a ray every 1 degree against the outer field
+0.05 m/s; suction switches instantly; harite has no height, its command is just echoed back; the LiDAR casts a ray every 1 degree against the outer field
 walls only (obstacles are not hit). The model advances whenever snapshot() is called.
 """
 import argparse
@@ -21,6 +21,7 @@ DEFAULT_CONFIG = DEFAULTS
 LIFT_SPEED = 0.05  # m/s
 STAGE_S = 1.0
 PATH_RUN_S = 3.0
+HARITE_MAX = 100.0  # rad/s, harite.yaml max_velocity (the demo crate mirrors it)
 MAX_RANGE = 30.0
 # Motor model (the demo crate mirrors it): wheel i sits at 90 + 120 i degrees; its speed is the
 # commanded body velocity projected on the rolling direction, plus the turn. Current is
@@ -85,6 +86,10 @@ class FakeRosIo:
         self._last = clock()
         self._tracker = False
         self._suction = [False, False]
+        # Harite: no height is simulated; /harite/command just echoes the target the node would send.
+        # Like the node, a command is dropped while disabled and a disable sends 0.
+        self._harite_enabled = True
+        self._harite_command = None
         self._lift = [dict(h=0.0, goal=0.0, moving=False, arrived=True, done=None) for _ in range(2)]
         self._task = None  # dict(kind, gripper, block, column, row, stages, i, t0, step, done)
         self._holding = [False, False]
@@ -224,6 +229,18 @@ class FakeRosIo:
             self._picked = []
         done(True, "")
 
+    def publish_harite(self, velocity):
+        with self._lock:
+            if self._harite_enabled:
+                self._harite_command = max(-HARITE_MAX, min(HARITE_MAX, float(velocity)))
+
+    def set_harite_enabled(self, on, done):
+        with self._lock:
+            self._harite_enabled = bool(on)
+            if not on:
+                self._harite_command = 0.0
+        done(True, "")
+
     def set_suction(self, gripper, on, done):
         with self._lock:
             self._suction[gripper] = bool(on)
@@ -264,7 +281,7 @@ class FakeRosIo:
                 grippers=[(l["h"], l["goal"], l["moving"], l["arrived"], self._suction[i], True)
                           for i, l in enumerate(self._lift)],
                 scan=self._scan(), path=list(self._path), task_text=self._task_text(),
-                tracker_enabled=self._tracker)
+                tracker_enabled=self._tracker, harite_command=self._harite_command)
         self._run(fire)  # outside our lock: callbacks take the supervisor lock
         return snap
 

@@ -19,7 +19,7 @@ Rust (`crates/proto`) と Python (`ros/oumuamua_controller_bridge/oumuamua_contr
 | --- | --- | --- | --- |
 | 0 | HELLO | スマホ→ | `[0, session: u32, client_name: str, takeover: bool, auth: nil]` |
 | 1 | WELCOME | →スマホ | `[1, session: u32, robot_name: str, accepted: bool, reason: str]` |
-| 2 | CONTROL | スマホ→ | `[2, session, seq: u32, t_ms: u32, vx: f64, vy: f64, wz: f64, field_frame: bool, jog_left: int, jog_right: int, estop: bool]` |
+| 2 | CONTROL | スマホ→ | `[2, session, seq: u32, t_ms: u32, vx: f64, vy: f64, wz: f64, field_frame: bool, jog_left: int, jog_right: int, estop: bool, jog_harite: int]` |
 | 3 | STATE | →スマホ | `[3, session, seq: u32, ack_seq: u32, ack_t_ms: u32, body: State]` |
 | 4 | SCAN | →スマホ | `[4, session, scan_id: u32, frag: u8, frag_count: u8, points: bin]` |
 | 5 | REL | 両方 | `[5, session, seq: u32, msg: Msg]`(確実に届ける流れの 1 区切り) |
@@ -33,12 +33,13 @@ Rust (`crates/proto`) と Python (`ros/oumuamua_controller_bridge/oumuamua_contr
 - CONTROL は 50 回/秒。seq は 1 から増える。橋渡しノードは今までで最大の seq 以下を捨てる。
   - jog_left / jog_right: 昇降の「上」「下」を押している間 +1 / -1、離すと 0。
   - estop: スマホの全停止ボタンが押されて、まだ解除されていない間 true。
+  - jog_harite: ハリテ(吸引なしの昇降)の「上」「下」を押している間 +1 / -1、離すと 0。後から末尾に足した項目(5.3)。古いスマホは送らない(無い、または nil は 0 = 離している)。古い橋渡しノードは 12 番目以降を読まないので無視される。+1 以外の正の数は +1、-1 以外の負の数は -1 とみなし、数でないものは 0。
 - STATE は 20 回/秒。ack_seq / ack_t_ms は最後に受けた CONTROL の seq と t_ms(往復の遅延を測るため。無ければ 0)。
 - SCAN は 10 回/秒。points は、フィールド座標系の点を (x, y) の順に i16 リトルエンディアン [mm] で並べたもの。1 データグラムに 280 点まで。scan_id の frag 0..frag_count-1 がそろったら 1 回分。そろう前に次の scan_id が来たら捨てる。
 
 ### 2.1 State
 
-`[mode: u8, stop_reason: str, pose: [x, y, yaw] | nil, vel: [vx, vy, wz] | nil, wheels: [Motor ...], grippers: [Gripper | nil, Gripper | nil], task: Task | nil, path: [name: str, active: bool] | nil, tracker_enabled: bool]`
+`[mode: u8, stop_reason: str, pose: [x, y, yaw] | nil, vel: [vx, vy, wz] | nil, wheels: [Motor ...], grippers: [Gripper | nil, Gripper | nil], task: Task | nil, path: [name: str, active: bool] | nil, tracker_enabled: bool, harite_command: f64 | nil]`
 
 - mode: 0 = 手動、1 = 自動、2 = 停止。stop_reason は停止の理由(`"estop"`、`"link lost"`)、停止でなければ ""。
 - pose は自己位置(フィールド座標系)、vel は機体座標系の速度。推定が無ければ nil。
@@ -54,6 +55,7 @@ Rust (`crates/proto`) と Python (`ros/oumuamua_controller_bridge/oumuamua_contr
   - Gripper: `[height: f64, goal: f64, moving: bool, arrived: bool, suction: bool, feedback: bool]`
 - task は作業中なら `[kind: u8, step: str, args: [gripper: i32, block: i32, column: i32, row: i32]]`(kind は RunTask の type)。作業中でなければ nil。
 - path は path_follower で走っている経路(START_PATH で始めたもの。終わると nil に戻る)。無ければ nil。
+- harite_command は `/harite/command`(ハリテのノードが実際にロボマスへ送った目標、ロータ角速度 [rad/s])の最後の値。まだ届いていない、有限でない、ハリテを使わない設定のときは nil。後から末尾に足した項目で、無い(古い橋渡しノード)は nil と同じ。古いスマホは 10 番目を読まない。ハリテには位置も高さも無いので、出すのはこの値だけ。
 
 ## 3. 確実に届ける流れ
 
@@ -109,7 +111,7 @@ Rust (`crates/proto`) と Python (`ros/oumuamua_controller_bridge/oumuamua_contr
 | 番号 | 名前 | 中身 |
 | --- | --- | --- |
 | 50 | RESULT | `[50, req: u32, ok: bool, message: str]` |
-| 51 | CONFIG | `[51, robot_name: str, paths: [str], lift_presets: [[name: str, height: f64]], lift_max: f64, speed_levels: [[v: f64, w: f64] x3], blocks: u8, columns: u8, rows: u8]` |
+| 51 | CONFIG | `[51, robot_name: str, paths: [str], lift_presets: [[name: str, height: f64]], lift_max: f64, speed_levels: [[v: f64, w: f64] x3], blocks: u8, columns: u8, rows: u8, harite: bool]`(`harite` は後から足した項目: ハリテを操作できる。false、nil、無い(古い橋渡しノード)のとき、スマホはハリテの操作を隠す) |
 | 52 | FIELD | `[52, bounds: [xmin, ymin, xmax, ymax], obstacles: [[xmin, ymin, xmax, ymax]], shelf: [xmin, ymin, xmax, ymax], start: [x, y, yaw], robot_radius: f64, footprint: [[x, y]], suction: [[x, y]]]`(外周と障害物は箱。1200 バイトに収まるよう、辺ではなく箱で送る。`footprint` は機体の外形の多角形、`suction` は吸着面の中心(gripper0 = 左が先)で、どちらも機体座標系(x 前・y 左)。6 番目までしか持たない相手や、`footprint` が空・nil の場合、スマホは `robot_radius` の円で描く。受け手は後ろに足された項目を無視する) |
 | 53 | PATH_SHAPE | `[53, name: str, points: bin]`(SCAN と同じ点の並び。経路が変わるたび。消えたら空。280 点を超える経路は、始点と終点を残して全体から等間隔に間引く) |
 | 54 | TASK_MEMORY | `[54, holding: [bool, bool], picked: [u8], placed: [[column: u8, row: u8]]]`(task_commander は置いたマスを覚えなくなったので、橋渡しノードは `placed` を常に空で送り、スマホは来ても無視する。項目は古い相手との互換のために残す) |
@@ -140,3 +142,14 @@ Rust (`crates/proto`) と Python (`ros/oumuamua_controller_bridge/oumuamua_contr
 - タブごとに直近の出力を 2000 行(多くても 256 KiB)取っておき、SHELL_OPENED の replay にする。
 - 記録: `~/.oumuamua_controller/console/<タブ名>/<開いた日時 YYYYmmdd-HHMMSS>.log`。行の頭に `HH:MM:SS.mmm` と、入力なら `> `、出力なら `  ` を付ける。
 - タブ名: `[A-Za-z0-9_-]{1,32}`。
+
+### 5.3 ハリテ
+
+吸引なしの昇降機構(ロボット側の `harite` パッケージ)。位置・プリセット・上下限は無く、行程の終端では操作する人が止める。ロボット側のインターフェース: `/harite/target_velocity`(`std_msgs/Float64`、ロータ角速度 [rad/s]。継続して送る。0.2 秒途切れるとノードが 0 を送る)、`/harite/enable`(`std_srvs/SetBool`)、`/harite/command`(`Float64`、実際に送った目標)。最大は 100 rad/s。
+
+- 橋渡しノードのパラメータ(省略可。省略時は括弧の値): `harite_enabled`(true。ハリテの無いロボットは false で CONFIG の `harite` が false になり、スマホは操作を隠し、橋渡しノードはハリテに触れない)、`harite_speed`(30.0 rad/s。0 から 100 に切り詰める)、`harite_reversed`(false。実機で「上」が負のとき true にして符号を反転する)。
+- 手動のとき、橋渡しノードは tick(50 回/秒)ごとに `/harite/target_velocity` へ `jog_harite × harite_speed`(reversed なら符号反転)を出す。離したときは 0 を出し続ける。車輪と同じ見張りで、CONTROL が 0.3 秒途切れれば停止に入って出力を止め、ノード側の 0.2 秒の期限も重なる。
+- 停止に入るとき(estop、CONTROL の途切れ、BYE、接続の直後、乗っ取り): まず 0 を 1 回出し、次に `/harite/enable false` を呼ぶ。確認が取れるまで 0 を出し続け、1 秒ごとに呼び直す(サービスが無い、返事が落ちた場合も有効のまま残さない)。起動直後も停止なので、解除まではハリテも無効にしておく。
+- RELEASE_STOP が成功したとき `/harite/enable true` を呼ぶ(確認が取れるまで 1 秒ごとに呼び直す)。停止や自動の間に押しっぱなしだったボタンは、いったん離して押し直すまで 0 のまま(車輪の「解除より新しい CONTROL で動く」と、昇降の「押しっぱなしでは始まらない」と同じ考え)。
+- 自動のときは出さない。自動に入る瞬間に 0 を 1 回出し、あとはノード側の期限で止まる。手動に戻っても、押しっぱなしのボタンは離すまで効かない。
+- 停止の間、ハリテの操作は受け付けない(スマホも ▲▼ を無効にする)。
